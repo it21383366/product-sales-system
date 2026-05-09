@@ -54,18 +54,6 @@ function App() {
     verifySession();
   }, []);
 
-  const getPageTitle = () => {
-    if (activePage === "dashboard") return "Dashboard";
-    if (activePage === "products") return "Products";
-    if (activePage === "suppliers") return "Suppliers";
-    if (activePage === "new-sale") return "New Sale";
-    if (activePage === "users") return "Users";
-    if (activePage === "reports") return "Reports";
-    if (activePage === "settings") return "Settings";
-    if (activePage === "logs") return "Logs";
-    return "Dashboard";
-  };
-
   const fetchSettings = async () => {
     try {
       const response = await api.get("/api/settings");
@@ -278,7 +266,6 @@ function App() {
 
         <main className="main-content">
           <section className="page-title">
-            <h2>{getPageTitle()}</h2>
           </section>
 
           {activePage === "dashboard" && (
