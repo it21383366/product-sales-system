@@ -623,6 +623,859 @@ app.get(
   }
 );
 
+// Get all users in the logged-in user's organisation
+app.get(
+  "/api/users",
+  authMiddleware,
+  requirePermission("users.view"),
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        SELECT 
+          users.id,
+          users.full_name,
+          users.email,
+          users.phone,
+          users.status,
+          users.created_at,
+          users.last_login,
+          roles.name AS role_name
+        FROM users
+        LEFT JOIN roles ON users.role_id = roles.id
+        WHERE users.organisation_id = $1
+        ORDER BY users.created_at DESC
+        `,
+        [req.user.organisation_id]
+      );
+
+      res.json({
+        status: "success",
+        users: result.rows,
+      });
+    } catch (error) {
+      console.error("Get users error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get users",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Create a new user/employee
+app.post(
+  "/api/users",
+  authMiddleware,
+  requirePermission("users.create"),
+  async (req, res) => {
+    try {
+      const { fullName, email, password, phone, roleId } = req.body;
+
+      if (!fullName || !email || !password || !roleId) {
+        return res.status(400).json({
+          status: "error",
+          message: "Full name, email, password, and role are required",
+        });
+      }
+
+      if (password.length < 6) {
+        return res.status(400).json({
+          status: "error",
+          message: "Password must be at least 6 characters",
+        });
+      }
+
+      const existingUser = await pool.query(
+        "SELECT id FROM users WHERE email = $1",
+        [email]
+      );
+
+      if (existingUser.rows.length > 0) {
+        return res.status(409).json({
+          status: "error",
+          message: "A user with this email already exists",
+        });
+      }
+
+      const roleCheck = await pool.query(
+        `
+        SELECT id FROM roles
+        WHERE id = $1 AND organisation_id = $2
+        `,
+        [roleId, req.user.organisation_id]
+      );
+
+      if (roleCheck.rows.length === 0) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid role selected",
+        });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+
+      const result = await pool.query(
+        `
+        INSERT INTO users (
+          organisation_id,
+          role_id,
+          full_name,
+          email,
+          password_hash,
+          phone,
+          status
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, 'active')
+        RETURNING id, organisation_id, role_id, full_name, email, phone, status, created_at
+        `,
+        [
+          req.user.organisation_id,
+          roleId,
+          fullName,
+          email,
+          passwordHash,
+          phone || null,
+        ]
+      );
+
+      res.status(201).json({
+        status: "success",
+        message: "User created successfully",
+        user: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Create user error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to create user",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Update user details
+app.patch(
+  "/api/users/:id",
+  authMiddleware,
+  requirePermission("users.edit"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { fullName, phone, roleId } = req.body;
+
+      const userCheck = await pool.query(
+        `
+        SELECT id FROM users
+        WHERE id = $1 AND organisation_id = $2
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (userCheck.rows.length === 0) {
+        return res.status(404).json({
+          status: "error",
+          message: "User not found",
+        });
+      }
+
+      if (roleId) {
+        const roleCheck = await pool.query(
+          `
+          SELECT id FROM roles
+          WHERE id = $1 AND organisation_id = $2
+          `,
+          [roleId, req.user.organisation_id]
+        );
+
+        if (roleCheck.rows.length === 0) {
+          return res.status(400).json({
+            status: "error",
+            message: "Invalid role selected",
+          });
+        }
+      }
+
+      const result = await pool.query(
+        `
+        UPDATE users
+        SET 
+          full_name = COALESCE($1, full_name),
+          phone = COALESCE($2, phone),
+          role_id = COALESCE($3, role_id),
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $4 AND organisation_id = $5
+        RETURNING id, organisation_id, role_id, full_name, email, phone, status, updated_at
+        `,
+        [
+          fullName || null,
+          phone || null,
+          roleId || null,
+          id,
+          req.user.organisation_id,
+        ]
+      );
+
+      res.json({
+        status: "success",
+        message: "User updated successfully",
+        user: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Update user error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to update user",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Activate or deactivate user
+app.patch(
+  "/api/users/:id/status",
+  authMiddleware,
+  requirePermission("users.edit"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
+
+      if (!["active", "inactive"].includes(status)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Status must be active or inactive",
+        });
+      }
+
+      if (id === req.user.id) {
+        return res.status(400).json({
+          status: "error",
+          message: "You cannot change your own status",
+        });
+      }
+
+      const result = await pool.query(
+        `
+        UPDATE users
+        SET status = $1, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2 AND organisation_id = $3
+        RETURNING id, full_name, email, status
+        `,
+        [status, id, req.user.organisation_id]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          status: "error",
+          message: "User not found",
+        });
+      }
+
+      res.json({
+        status: "success",
+        message: `User ${status === "active" ? "activated" : "deactivated"} successfully`,
+        user: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Update user status error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to update user status",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Delete user
+app.delete(
+  "/api/users/:id",
+  authMiddleware,
+  requirePermission("users.delete"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      if (id === req.user.id) {
+        return res.status(400).json({
+          status: "error",
+          message: "You cannot delete your own account",
+        });
+      }
+
+      const result = await pool.query(
+        `
+        DELETE FROM users
+        WHERE id = $1 AND organisation_id = $2
+        RETURNING id, full_name, email
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          status: "error",
+          message: "User not found",
+        });
+      }
+
+      res.json({
+        status: "success",
+        message: "User deleted successfully",
+        user: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Delete user error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to delete user",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get roles for current organisation
+app.get(
+  "/api/roles",
+  authMiddleware,
+  requirePermission("users.view"),
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        SELECT id, name, description, is_system_role, created_at
+        FROM roles
+        WHERE organisation_id = $1
+        ORDER BY name ASC
+        `,
+        [req.user.organisation_id]
+      );
+
+      res.json({
+        status: "success",
+        roles: result.rows,
+      });
+    } catch (error) {
+      console.error("Get roles error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get roles",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Create default roles for current organisation
+app.post(
+  "/api/roles/create-defaults",
+  authMiddleware,
+  requirePermission("roles.manage"),
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const defaultRoles = [
+        {
+          name: "Manager",
+          description: "Can manage products, suppliers, sales, and reports",
+          permissions: [
+            "dashboard.view",
+            "products.view",
+            "products.create",
+            "products.edit",
+            "suppliers.view",
+            "suppliers.create",
+            "suppliers.edit",
+            "sales.view",
+            "sales.create",
+            "reports.view",
+            "users.view",
+          ],
+        },
+        {
+          name: "Cashier",
+          description: "Can search products and create sales",
+          permissions: [
+            "dashboard.view",
+            "products.view",
+            "sales.create",
+            "sales.view",
+          ],
+        },
+        {
+          name: "Inventory Staff",
+          description: "Can manage products and suppliers",
+          permissions: [
+            "dashboard.view",
+            "products.view",
+            "products.create",
+            "products.edit",
+            "suppliers.view",
+            "suppliers.create",
+            "suppliers.edit",
+          ],
+        },
+      ];
+
+      const createdRoles = [];
+
+      for (const role of defaultRoles) {
+        const roleResult = await client.query(
+          `
+          INSERT INTO roles (organisation_id, name, description, is_system_role)
+          VALUES ($1, $2, $3, true)
+          ON CONFLICT DO NOTHING
+          RETURNING *
+          `,
+          [req.user.organisation_id, role.name, role.description]
+        );
+
+        let roleRecord;
+
+        if (roleResult.rows.length > 0) {
+          roleRecord = roleResult.rows[0];
+        } else {
+          const existingRole = await client.query(
+            `
+            SELECT *
+            FROM roles
+            WHERE organisation_id = $1 AND name = $2
+            `,
+            [req.user.organisation_id, role.name]
+          );
+
+          roleRecord = existingRole.rows[0];
+        }
+
+        for (const permissionCode of role.permissions) {
+          await client.query(
+            `
+            INSERT INTO role_permissions (role_id, permission_id)
+            SELECT $1, id
+            FROM permissions
+            WHERE code = $2
+            ON CONFLICT (role_id, permission_id) DO NOTHING
+            `,
+            [roleRecord.id, permissionCode]
+          );
+        }
+
+        createdRoles.push({
+          id: roleRecord.id,
+          name: roleRecord.name,
+          description: roleRecord.description,
+        });
+      }
+
+      await client.query("COMMIT");
+
+      res.json({
+        status: "success",
+        message: "Default roles created successfully",
+        roles: createdRoles,
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+
+      console.error("Create default roles error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to create default roles",
+        error: error.message,
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// =========================
+// SUPPLIERS API
+// =========================
+
+// Get all suppliers
+app.get(
+  "/api/suppliers",
+  authMiddleware,
+  requirePermission("suppliers.view"),
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        SELECT *
+        FROM suppliers
+        WHERE organisation_id = $1
+        ORDER BY created_at DESC
+        `,
+        [req.user.organisation_id]
+      );
+
+      res.json({
+        status: "success",
+        suppliers: result.rows,
+      });
+    } catch (error) {
+      console.error("Get suppliers error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get suppliers",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Create supplier
+app.post(
+  "/api/suppliers",
+  authMiddleware,
+  requirePermission("suppliers.create"),
+  async (req, res) => {
+    try {
+      const { name, contactPerson, phone, email, address, notes } = req.body;
+
+      if (!name) {
+        return res.status(400).json({
+          status: "error",
+          message: "Supplier name is required",
+        });
+      }
+
+      const result = await pool.query(
+        `
+        INSERT INTO suppliers (
+          organisation_id,
+          name,
+          contact_person,
+          phone,
+          email,
+          address,
+          notes
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *
+        `,
+        [
+          req.user.organisation_id,
+          name,
+          contactPerson || null,
+          phone || null,
+          email || null,
+          address || null,
+          notes || null,
+        ]
+      );
+
+      res.status(201).json({
+        status: "success",
+        message: "Supplier created successfully",
+        supplier: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Create supplier error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to create supplier",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Update supplier
+app.patch(
+  "/api/suppliers/:id",
+  authMiddleware,
+  requirePermission("suppliers.edit"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { name, contactPerson, phone, email, address, notes, isActive } = req.body;
+
+      const result = await pool.query(
+        `
+        UPDATE suppliers
+        SET
+          name = COALESCE($1, name),
+          contact_person = COALESCE($2, contact_person),
+          phone = COALESCE($3, phone),
+          email = COALESCE($4, email),
+          address = COALESCE($5, address),
+          notes = COALESCE($6, notes),
+          is_active = COALESCE($7, is_active),
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $8 AND organisation_id = $9
+        RETURNING *
+        `,
+        [
+          name || null,
+          contactPerson || null,
+          phone || null,
+          email || null,
+          address || null,
+          notes || null,
+          typeof isActive === "boolean" ? isActive : null,
+          id,
+          req.user.organisation_id,
+        ]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          status: "error",
+          message: "Supplier not found",
+        });
+      }
+
+      res.json({
+        status: "success",
+        message: "Supplier updated successfully",
+        supplier: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Update supplier error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to update supplier",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Delete supplier
+app.delete(
+  "/api/suppliers/:id",
+  authMiddleware,
+  requirePermission("suppliers.delete"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const result = await pool.query(
+        `
+        DELETE FROM suppliers
+        WHERE id = $1 AND organisation_id = $2
+        RETURNING *
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          status: "error",
+          message: "Supplier not found",
+        });
+      }
+
+      res.json({
+        status: "success",
+        message: "Supplier deleted successfully",
+        supplier: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Delete supplier error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to delete supplier",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// =========================
+// CATEGORIES API
+// =========================
+
+// Get all categories
+app.get(
+  "/api/categories",
+  authMiddleware,
+  requirePermission("products.view"),
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        SELECT *
+        FROM categories
+        WHERE organisation_id = $1
+        ORDER BY name ASC
+        `,
+        [req.user.organisation_id]
+      );
+
+      res.json({
+        status: "success",
+        categories: result.rows,
+      });
+    } catch (error) {
+      console.error("Get categories error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get categories",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Create category
+app.post(
+  "/api/categories",
+  authMiddleware,
+  requirePermission("products.create"),
+  async (req, res) => {
+    try {
+      const { name, description } = req.body;
+
+      if (!name) {
+        return res.status(400).json({
+          status: "error",
+          message: "Category name is required",
+        });
+      }
+
+      const result = await pool.query(
+        `
+        INSERT INTO categories (
+          organisation_id,
+          name,
+          description
+        )
+        VALUES ($1, $2, $3)
+        RETURNING *
+        `,
+        [req.user.organisation_id, name, description || null]
+      );
+
+      res.status(201).json({
+        status: "success",
+        message: "Category created successfully",
+        category: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Create category error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to create category",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Update category
+app.patch(
+  "/api/categories/:id",
+  authMiddleware,
+  requirePermission("products.edit"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { name, description } = req.body;
+
+      const result = await pool.query(
+        `
+        UPDATE categories
+        SET
+          name = COALESCE($1, name),
+          description = COALESCE($2, description),
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $3 AND organisation_id = $4
+        RETURNING *
+        `,
+        [name || null, description || null, id, req.user.organisation_id]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          status: "error",
+          message: "Category not found",
+        });
+      }
+
+      res.json({
+        status: "success",
+        message: "Category updated successfully",
+        category: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Update category error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to update category",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Delete category
+app.delete(
+  "/api/categories/:id",
+  authMiddleware,
+  requirePermission("products.delete"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const result = await pool.query(
+        `
+        DELETE FROM categories
+        WHERE id = $1 AND organisation_id = $2
+        RETURNING *
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          status: "error",
+          message: "Category not found",
+        });
+      }
+
+      res.json({
+        status: "success",
+        message: "Category deleted successfully",
+        category: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Delete category error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to delete category",
+        error: error.message,
+      });
+    }
+  }
+);
+
+
 
 const PORT = process.env.PORT || 5001;
 
