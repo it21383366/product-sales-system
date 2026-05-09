@@ -1475,7 +1475,1313 @@ app.delete(
   }
 );
 
+// =========================
+// PRODUCTS API
+// =========================
 
+// Get all products with search/filter
+app.get(
+  "/api/products",
+  authMiddleware,
+  requirePermission("products.view"),
+  async (req, res) => {
+    try {
+      const { search, categoryId, supplierId, lowStock } = req.query;
+
+      let query = `
+        SELECT 
+          products.*,
+          suppliers.name AS supplier_name,
+          categories.name AS category_name
+        FROM products
+        LEFT JOIN suppliers ON products.supplier_id = suppliers.id
+        LEFT JOIN categories ON products.category_id = categories.id
+        WHERE products.organisation_id = $1
+      `;
+
+      const values = [req.user.organisation_id];
+      let count = 2;
+
+      if (search) {
+        query += `
+          AND (
+            products.name ILIKE $${count}
+            OR products.sku ILIKE $${count}
+            OR products.barcode ILIKE $${count}
+          )
+        `;
+        values.push(`%${search}%`);
+        count++;
+      }
+
+      if (categoryId) {
+        query += ` AND products.category_id = $${count}`;
+        values.push(categoryId);
+        count++;
+      }
+
+      if (supplierId) {
+        query += ` AND products.supplier_id = $${count}`;
+        values.push(supplierId);
+        count++;
+      }
+
+      if (lowStock === "true") {
+        query += ` AND products.stock_quantity <= products.low_stock_alert`;
+      }
+
+      query += ` ORDER BY products.created_at DESC`;
+
+      const result = await pool.query(query, values);
+
+      res.json({
+        status: "success",
+        products: result.rows,
+      });
+    } catch (error) {
+      console.error("Get products error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get products",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get single product
+app.get(
+  "/api/products/:id",
+  authMiddleware,
+  requirePermission("products.view"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const result = await pool.query(
+        `
+        SELECT 
+          products.*,
+          suppliers.name AS supplier_name,
+          categories.name AS category_name
+        FROM products
+        LEFT JOIN suppliers ON products.supplier_id = suppliers.id
+        LEFT JOIN categories ON products.category_id = categories.id
+        WHERE products.id = $1 AND products.organisation_id = $2
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          status: "error",
+          message: "Product not found",
+        });
+      }
+
+      res.json({
+        status: "success",
+        product: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Get product error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get product",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Create product
+app.post(
+  "/api/products",
+  authMiddleware,
+  requirePermission("products.create"),
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const {
+        name,
+        sku,
+        barcode,
+        description,
+        buyingPrice,
+        sellingPrice,
+        stockQuantity,
+        lowStockAlert,
+        supplierId,
+        categoryId,
+        imageUrl,
+      } = req.body;
+
+      if (!name || sellingPrice === undefined) {
+        return res.status(400).json({
+          status: "error",
+          message: "Product name and selling price are required",
+        });
+      }
+
+      await client.query("BEGIN");
+
+      if (supplierId) {
+        const supplierCheck = await client.query(
+          `
+          SELECT id FROM suppliers
+          WHERE id = $1 AND organisation_id = $2
+          `,
+          [supplierId, req.user.organisation_id]
+        );
+
+        if (supplierCheck.rows.length === 0) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message: "Invalid supplier selected",
+          });
+        }
+      }
+
+      if (categoryId) {
+        const categoryCheck = await client.query(
+          `
+          SELECT id FROM categories
+          WHERE id = $1 AND organisation_id = $2
+          `,
+          [categoryId, req.user.organisation_id]
+        );
+
+        if (categoryCheck.rows.length === 0) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message: "Invalid category selected",
+          });
+        }
+      }
+
+      const productResult = await client.query(
+        `
+        INSERT INTO products (
+          organisation_id,
+          supplier_id,
+          category_id,
+          name,
+          sku,
+          barcode,
+          description,
+          buying_price,
+          selling_price,
+          stock_quantity,
+          low_stock_alert,
+          image_url
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        RETURNING *
+        `,
+        [
+          req.user.organisation_id,
+          supplierId || null,
+          categoryId || null,
+          name,
+          sku || null,
+          barcode || null,
+          description || null,
+          buyingPrice || 0,
+          sellingPrice,
+          stockQuantity || 0,
+          lowStockAlert || 5,
+          imageUrl || null,
+        ]
+      );
+
+      const product = productResult.rows[0];
+
+      if ((stockQuantity || 0) > 0) {
+        await client.query(
+          `
+          INSERT INTO stock_movements (
+            organisation_id,
+            product_id,
+            movement_type,
+            quantity,
+            reason,
+            created_by
+          )
+          VALUES ($1, $2, 'initial_stock', $3, 'Initial product stock', $4)
+          `,
+          [
+            req.user.organisation_id,
+            product.id,
+            stockQuantity || 0,
+            req.user.id,
+          ]
+        );
+      }
+
+      await client.query("COMMIT");
+
+      res.status(201).json({
+        status: "success",
+        message: "Product created successfully",
+        product,
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+
+      console.error("Create product error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to create product",
+        error: error.message,
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// Update product
+app.patch(
+  "/api/products/:id",
+  authMiddleware,
+  requirePermission("products.edit"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const {
+        name,
+        sku,
+        barcode,
+        description,
+        buyingPrice,
+        sellingPrice,
+        lowStockAlert,
+        supplierId,
+        categoryId,
+        imageUrl,
+        isActive,
+      } = req.body;
+
+      const result = await pool.query(
+        `
+        UPDATE products
+        SET
+          supplier_id = COALESCE($1, supplier_id),
+          category_id = COALESCE($2, category_id),
+          name = COALESCE($3, name),
+          sku = COALESCE($4, sku),
+          barcode = COALESCE($5, barcode),
+          description = COALESCE($6, description),
+          buying_price = COALESCE($7, buying_price),
+          selling_price = COALESCE($8, selling_price),
+          low_stock_alert = COALESCE($9, low_stock_alert),
+          image_url = COALESCE($10, image_url),
+          is_active = COALESCE($11, is_active),
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $12 AND organisation_id = $13
+        RETURNING *
+        `,
+        [
+          supplierId || null,
+          categoryId || null,
+          name || null,
+          sku || null,
+          barcode || null,
+          description || null,
+          buyingPrice !== undefined ? buyingPrice : null,
+          sellingPrice !== undefined ? sellingPrice : null,
+          lowStockAlert !== undefined ? lowStockAlert : null,
+          imageUrl || null,
+          typeof isActive === "boolean" ? isActive : null,
+          id,
+          req.user.organisation_id,
+        ]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          status: "error",
+          message: "Product not found",
+        });
+      }
+
+      res.json({
+        status: "success",
+        message: "Product updated successfully",
+        product: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Update product error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to update product",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Adjust product stock
+app.patch(
+  "/api/products/:id/stock",
+  authMiddleware,
+  requirePermission("products.edit"),
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const { id } = req.params;
+      const { movementType, quantity, reason } = req.body;
+
+      if (!movementType || quantity === undefined) {
+        return res.status(400).json({
+          status: "error",
+          message: "Movement type and quantity are required",
+        });
+      }
+
+      if (!["increase", "decrease", "set"].includes(movementType)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Movement type must be increase, decrease, or set",
+        });
+      }
+
+      await client.query("BEGIN");
+
+      const productCheck = await client.query(
+        `
+        SELECT id, stock_quantity
+        FROM products
+        WHERE id = $1 AND organisation_id = $2
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (productCheck.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({
+          status: "error",
+          message: "Product not found",
+        });
+      }
+
+      const currentStock = productCheck.rows[0].stock_quantity;
+      let newStock;
+      let movementQuantity;
+
+      if (movementType === "increase") {
+        newStock = currentStock + quantity;
+        movementQuantity = quantity;
+      } else if (movementType === "decrease") {
+        newStock = currentStock - quantity;
+        movementQuantity = -quantity;
+      } else {
+        newStock = quantity;
+        movementQuantity = quantity - currentStock;
+      }
+
+      if (newStock < 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          status: "error",
+          message: "Stock cannot be negative",
+        });
+      }
+
+      const productResult = await client.query(
+        `
+        UPDATE products
+        SET stock_quantity = $1, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2 AND organisation_id = $3
+        RETURNING *
+        `,
+        [newStock, id, req.user.organisation_id]
+      );
+
+      await client.query(
+        `
+        INSERT INTO stock_movements (
+          organisation_id,
+          product_id,
+          movement_type,
+          quantity,
+          reason,
+          created_by
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          req.user.organisation_id,
+          id,
+          movementType,
+          movementQuantity,
+          reason || "Manual stock adjustment",
+          req.user.id,
+        ]
+      );
+
+      await client.query("COMMIT");
+
+      res.json({
+        status: "success",
+        message: "Stock updated successfully",
+        product: productResult.rows[0],
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+
+      console.error("Update stock error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to update stock",
+        error: error.message,
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// Delete product
+app.delete(
+  "/api/products/:id",
+  authMiddleware,
+  requirePermission("products.delete"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const result = await pool.query(
+        `
+        DELETE FROM products
+        WHERE id = $1 AND organisation_id = $2
+        RETURNING *
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          status: "error",
+          message: "Product not found",
+        });
+      }
+
+      res.json({
+        status: "success",
+        message: "Product deleted successfully",
+        product: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Delete product error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to delete product",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// =========================
+// SALES / POS API
+// =========================
+
+// Create sale
+app.post(
+  "/api/sales",
+  authMiddleware,
+  requirePermission("sales.create"),
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const {
+        customerId,
+        items,
+        discountAmount,
+        paymentMethod,
+      } = req.body;
+
+      if (!items || !Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({
+          status: "error",
+          message: "Sale items are required",
+        });
+      }
+
+      await client.query("BEGIN");
+
+      let subtotal = 0;
+      const saleItems = [];
+
+      for (const item of items) {
+        const { productId, quantity } = item;
+
+        if (!productId || !quantity || quantity <= 0) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message: "Each item must have productId and valid quantity",
+          });
+        }
+
+        const productResult = await client.query(
+          `
+          SELECT id, name, selling_price, stock_quantity
+          FROM products
+          WHERE id = $1 
+          AND organisation_id = $2
+          AND is_active = true
+          `,
+          [productId, req.user.organisation_id]
+        );
+
+        if (productResult.rows.length === 0) {
+          await client.query("ROLLBACK");
+          return res.status(404).json({
+            status: "error",
+            message: `Product not found: ${productId}`,
+          });
+        }
+
+        const product = productResult.rows[0];
+
+        if (product.stock_quantity < quantity) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message: `Not enough stock for ${product.name}. Available stock: ${product.stock_quantity}`,
+          });
+        }
+
+        const unitPrice = Number(product.selling_price);
+        const totalPrice = unitPrice * quantity;
+
+        subtotal += totalPrice;
+
+        saleItems.push({
+          productId: product.id,
+          productName: product.name,
+          quantity,
+          unitPrice,
+          totalPrice,
+        });
+      }
+
+      const orgResult = await client.query(
+        `
+        SELECT tax_rate, invoice_prefix
+        FROM organisations
+        WHERE id = $1
+        `,
+        [req.user.organisation_id]
+      );
+
+      const organisation = orgResult.rows[0];
+
+      const finalDiscount = Number(discountAmount || 0);
+      const taxableAmount = subtotal - finalDiscount;
+      const taxRate = Number(organisation.tax_rate || 0);
+      const taxAmount = taxableAmount * (taxRate / 100);
+      const totalAmount = taxableAmount + taxAmount;
+
+      const saleCountResult = await client.query(
+        `
+        SELECT COUNT(*) AS count
+        FROM sales
+        WHERE organisation_id = $1
+        `,
+        [req.user.organisation_id]
+      );
+
+      const saleNumber = `${organisation.invoice_prefix || "INV"}-${String(
+        Number(saleCountResult.rows[0].count) + 1
+      ).padStart(5, "0")}`;
+
+      const saleResult = await client.query(
+        `
+        INSERT INTO sales (
+          organisation_id,
+          customer_id,
+          user_id,
+          sale_number,
+          subtotal,
+          discount_amount,
+          tax_amount,
+          total_amount,
+          payment_method,
+          status
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'completed')
+        RETURNING *
+        `,
+        [
+          req.user.organisation_id,
+          customerId || null,
+          req.user.id,
+          saleNumber,
+          subtotal,
+          finalDiscount,
+          taxAmount,
+          totalAmount,
+          paymentMethod || "cash",
+        ]
+      );
+
+      const sale = saleResult.rows[0];
+
+      for (const item of saleItems) {
+        await client.query(
+          `
+          INSERT INTO sale_items (
+            sale_id,
+            product_id,
+            product_name,
+            quantity,
+            unit_price,
+            total_price
+          )
+          VALUES ($1, $2, $3, $4, $5, $6)
+          `,
+          [
+            sale.id,
+            item.productId,
+            item.productName,
+            item.quantity,
+            item.unitPrice,
+            item.totalPrice,
+          ]
+        );
+
+        await client.query(
+          `
+          UPDATE products
+          SET stock_quantity = stock_quantity - $1,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = $2 AND organisation_id = $3
+          `,
+          [item.quantity, item.productId, req.user.organisation_id]
+        );
+
+        await client.query(
+          `
+          INSERT INTO stock_movements (
+            organisation_id,
+            product_id,
+            movement_type,
+            quantity,
+            reason,
+            created_by
+          )
+          VALUES ($1, $2, 'sale', $3, $4, $5)
+          `,
+          [
+            req.user.organisation_id,
+            item.productId,
+            -item.quantity,
+            `Sale ${saleNumber}`,
+            req.user.id,
+          ]
+        );
+      }
+
+      await client.query("COMMIT");
+
+      res.status(201).json({
+        status: "success",
+        message: "Sale completed successfully",
+        sale: {
+          ...sale,
+          items: saleItems,
+        },
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+
+      console.error("Create sale error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to create sale",
+        error: error.message,
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// Get sales history
+app.get(
+  "/api/sales",
+  authMiddleware,
+  requirePermission("sales.view"),
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        SELECT 
+          sales.*,
+          users.full_name AS sold_by,
+          customers.name AS customer_name
+        FROM sales
+        LEFT JOIN users ON sales.user_id = users.id
+        LEFT JOIN customers ON sales.customer_id = customers.id
+        WHERE sales.organisation_id = $1
+        ORDER BY sales.created_at DESC
+        `,
+        [req.user.organisation_id]
+      );
+
+      res.json({
+        status: "success",
+        sales: result.rows,
+      });
+    } catch (error) {
+      console.error("Get sales error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get sales",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get single sale with items
+app.get(
+  "/api/sales/:id",
+  authMiddleware,
+  requirePermission("sales.view"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const saleResult = await pool.query(
+        `
+        SELECT 
+          sales.*,
+          users.full_name AS sold_by,
+          customers.name AS customer_name
+        FROM sales
+        LEFT JOIN users ON sales.user_id = users.id
+        LEFT JOIN customers ON sales.customer_id = customers.id
+        WHERE sales.id = $1 AND sales.organisation_id = $2
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (saleResult.rows.length === 0) {
+        return res.status(404).json({
+          status: "error",
+          message: "Sale not found",
+        });
+      }
+
+      const itemsResult = await pool.query(
+        `
+        SELECT *
+        FROM sale_items
+        WHERE sale_id = $1
+        ORDER BY created_at ASC
+        `,
+        [id]
+      );
+
+      res.json({
+        status: "success",
+        sale: {
+          ...saleResult.rows[0],
+          items: itemsResult.rows,
+        },
+      });
+    } catch (error) {
+      console.error("Get sale error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get sale",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Refund / cancel sale
+app.patch(
+  "/api/sales/:id/refund",
+  authMiddleware,
+  requirePermission("sales.refund"),
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const { id } = req.params;
+      const { reason } = req.body;
+
+      await client.query("BEGIN");
+
+      const saleResult = await client.query(
+        `
+        SELECT *
+        FROM sales
+        WHERE id = $1 AND organisation_id = $2
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (saleResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({
+          status: "error",
+          message: "Sale not found",
+        });
+      }
+
+      const sale = saleResult.rows[0];
+
+      if (sale.status === "refunded") {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          status: "error",
+          message: "Sale is already refunded",
+        });
+      }
+
+      const itemsResult = await client.query(
+        `
+        SELECT *
+        FROM sale_items
+        WHERE sale_id = $1
+        `,
+        [id]
+      );
+
+      for (const item of itemsResult.rows) {
+        if (item.product_id) {
+          await client.query(
+            `
+            UPDATE products
+            SET stock_quantity = stock_quantity + $1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2 AND organisation_id = $3
+            `,
+            [item.quantity, item.product_id, req.user.organisation_id]
+          );
+
+          await client.query(
+            `
+            INSERT INTO stock_movements (
+              organisation_id,
+              product_id,
+              movement_type,
+              quantity,
+              reason,
+              created_by
+            )
+            VALUES ($1, $2, 'refund', $3, $4, $5)
+            `,
+            [
+              req.user.organisation_id,
+              item.product_id,
+              item.quantity,
+              reason || `Refund sale ${sale.sale_number}`,
+              req.user.id,
+            ]
+          );
+        }
+      }
+
+      const updatedSaleResult = await client.query(
+        `
+        UPDATE sales
+        SET status = 'refunded',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1 AND organisation_id = $2
+        RETURNING *
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      await client.query("COMMIT");
+
+      res.json({
+        status: "success",
+        message: "Sale refunded successfully",
+        sale: updatedSaleResult.rows[0],
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+
+      console.error("Refund sale error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to refund sale",
+        error: error.message,
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// =========================
+// REPORTS / DASHBOARD API
+// =========================
+
+// Dashboard summary
+app.get(
+  "/api/reports/dashboard",
+  authMiddleware,
+  requirePermission("reports.view"),
+  async (req, res) => {
+    try {
+      const organisationId = req.user.organisation_id;
+
+      const todaySalesResult = await pool.query(
+        `
+        SELECT 
+          COUNT(*) AS today_sales_count,
+          COALESCE(SUM(total_amount), 0) AS today_sales_total
+        FROM sales
+        WHERE organisation_id = $1
+        AND status = 'completed'
+        AND DATE(created_at) = CURRENT_DATE
+        `,
+        [organisationId]
+      );
+
+      const totalSalesResult = await pool.query(
+        `
+        SELECT 
+          COUNT(*) AS total_sales_count,
+          COALESCE(SUM(total_amount), 0) AS total_sales_amount
+        FROM sales
+        WHERE organisation_id = $1
+        AND status = 'completed'
+        `,
+        [organisationId]
+      );
+
+      const productsResult = await pool.query(
+        `
+        SELECT 
+          COUNT(*) AS total_products,
+          COALESCE(SUM(stock_quantity), 0) AS total_stock_quantity
+        FROM products
+        WHERE organisation_id = $1
+        AND is_active = true
+        `,
+        [organisationId]
+      );
+
+      const lowStockResult = await pool.query(
+        `
+        SELECT COUNT(*) AS low_stock_count
+        FROM products
+        WHERE organisation_id = $1
+        AND is_active = true
+        AND stock_quantity <= low_stock_alert
+        `,
+        [organisationId]
+      );
+
+      const usersResult = await pool.query(
+        `
+        SELECT COUNT(*) AS total_users
+        FROM users
+        WHERE organisation_id = $1
+        `,
+        [organisationId]
+      );
+
+      const suppliersResult = await pool.query(
+        `
+        SELECT COUNT(*) AS total_suppliers
+        FROM suppliers
+        WHERE organisation_id = $1
+        AND is_active = true
+        `,
+        [organisationId]
+      );
+
+      const recentSalesResult = await pool.query(
+        `
+        SELECT 
+          sales.id,
+          sales.sale_number,
+          sales.total_amount,
+          sales.payment_method,
+          sales.status,
+          sales.created_at,
+          users.full_name AS sold_by
+        FROM sales
+        LEFT JOIN users ON sales.user_id = users.id
+        WHERE sales.organisation_id = $1
+        ORDER BY sales.created_at DESC
+        LIMIT 5
+        `,
+        [organisationId]
+      );
+
+      const topProductsResult = await pool.query(
+        `
+        SELECT 
+          sale_items.product_id,
+          sale_items.product_name,
+          SUM(sale_items.quantity) AS total_quantity_sold,
+          SUM(sale_items.total_price) AS total_sales_value
+        FROM sale_items
+        JOIN sales ON sale_items.sale_id = sales.id
+        WHERE sales.organisation_id = $1
+        AND sales.status = 'completed'
+        GROUP BY sale_items.product_id, sale_items.product_name
+        ORDER BY total_quantity_sold DESC
+        LIMIT 5
+        `,
+        [organisationId]
+      );
+
+      res.json({
+        status: "success",
+        dashboard: {
+          todaySales: {
+            count: Number(todaySalesResult.rows[0].today_sales_count),
+            total: Number(todaySalesResult.rows[0].today_sales_total),
+          },
+          totalSales: {
+            count: Number(totalSalesResult.rows[0].total_sales_count),
+            amount: Number(totalSalesResult.rows[0].total_sales_amount),
+          },
+          products: {
+            total: Number(productsResult.rows[0].total_products),
+            stockQuantity: Number(productsResult.rows[0].total_stock_quantity),
+            lowStock: Number(lowStockResult.rows[0].low_stock_count),
+          },
+          users: {
+            total: Number(usersResult.rows[0].total_users),
+          },
+          suppliers: {
+            total: Number(suppliersResult.rows[0].total_suppliers),
+          },
+          recentSales: recentSalesResult.rows,
+          topProducts: topProductsResult.rows,
+        },
+      });
+    } catch (error) {
+      console.error("Dashboard report error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get dashboard report",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Sales report with optional date filters
+app.get(
+  "/api/reports/sales",
+  authMiddleware,
+  requirePermission("reports.view"),
+  async (req, res) => {
+    try {
+      const { startDate, endDate } = req.query;
+
+      let query = `
+        SELECT 
+          sales.id,
+          sales.sale_number,
+          sales.subtotal,
+          sales.discount_amount,
+          sales.tax_amount,
+          sales.total_amount,
+          sales.payment_method,
+          sales.status,
+          sales.created_at,
+          users.full_name AS sold_by
+        FROM sales
+        LEFT JOIN users ON sales.user_id = users.id
+        WHERE sales.organisation_id = $1
+      `;
+
+      const values = [req.user.organisation_id];
+      let count = 2;
+
+      if (startDate) {
+        query += ` AND DATE(sales.created_at) >= $${count}`;
+        values.push(startDate);
+        count++;
+      }
+
+      if (endDate) {
+        query += ` AND DATE(sales.created_at) <= $${count}`;
+        values.push(endDate);
+        count++;
+      }
+
+      query += ` ORDER BY sales.created_at DESC`;
+
+      const salesResult = await pool.query(query, values);
+
+      const summaryQuery = `
+        SELECT 
+          COUNT(*) AS sales_count,
+          COALESCE(SUM(subtotal), 0) AS subtotal,
+          COALESCE(SUM(discount_amount), 0) AS discount_total,
+          COALESCE(SUM(tax_amount), 0) AS tax_total,
+          COALESCE(SUM(total_amount), 0) AS total_amount
+        FROM sales
+        WHERE organisation_id = $1
+        AND status = 'completed'
+        ${startDate ? "AND DATE(created_at) >= $2" : ""}
+        ${
+          endDate
+            ? `AND DATE(created_at) <= $${startDate ? "3" : "2"}`
+            : ""
+        }
+      `;
+
+      const summaryValues = [req.user.organisation_id];
+      if (startDate) summaryValues.push(startDate);
+      if (endDate) summaryValues.push(endDate);
+
+      const summaryResult = await pool.query(summaryQuery, summaryValues);
+
+      res.json({
+        status: "success",
+        summary: {
+          salesCount: Number(summaryResult.rows[0].sales_count),
+          subtotal: Number(summaryResult.rows[0].subtotal),
+          discountTotal: Number(summaryResult.rows[0].discount_total),
+          taxTotal: Number(summaryResult.rows[0].tax_total),
+          totalAmount: Number(summaryResult.rows[0].total_amount),
+        },
+        sales: salesResult.rows,
+      });
+    } catch (error) {
+      console.error("Sales report error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get sales report",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Low stock report
+app.get(
+  "/api/reports/low-stock",
+  authMiddleware,
+  requirePermission("reports.view"),
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        SELECT 
+          products.id,
+          products.name,
+          products.sku,
+          products.stock_quantity,
+          products.low_stock_alert,
+          products.selling_price,
+          suppliers.name AS supplier_name,
+          categories.name AS category_name
+        FROM products
+        LEFT JOIN suppliers ON products.supplier_id = suppliers.id
+        LEFT JOIN categories ON products.category_id = categories.id
+        WHERE products.organisation_id = $1
+        AND products.is_active = true
+        AND products.stock_quantity <= products.low_stock_alert
+        ORDER BY products.stock_quantity ASC
+        `,
+        [req.user.organisation_id]
+      );
+
+      res.json({
+        status: "success",
+        lowStockProducts: result.rows,
+      });
+    } catch (error) {
+      console.error("Low stock report error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get low stock report",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Product performance report
+app.get(
+  "/api/reports/products",
+  authMiddleware,
+  requirePermission("reports.view"),
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        SELECT 
+          products.id,
+          products.name,
+          products.sku,
+          products.stock_quantity,
+          products.buying_price,
+          products.selling_price,
+          COALESCE(SUM(sale_items.quantity), 0) AS quantity_sold,
+          COALESCE(SUM(sale_items.total_price), 0) AS sales_value
+        FROM products
+        LEFT JOIN sale_items ON products.id = sale_items.product_id
+        LEFT JOIN sales 
+          ON sale_items.sale_id = sales.id
+          AND sales.status = 'completed'
+        WHERE products.organisation_id = $1
+        GROUP BY 
+          products.id,
+          products.name,
+          products.sku,
+          products.stock_quantity,
+          products.buying_price,
+          products.selling_price
+        ORDER BY quantity_sold DESC
+        `,
+        [req.user.organisation_id]
+      );
+
+      res.json({
+        status: "success",
+        products: result.rows,
+      });
+    } catch (error) {
+      console.error("Product report error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get product report",
+        error: error.message,
+      });
+    }
+  }
+);
 
 const PORT = process.env.PORT || 5001;
 
