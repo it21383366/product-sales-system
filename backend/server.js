@@ -204,6 +204,18 @@ app.get("/api/setup-database", async (req, res) => {
         details JSONB,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+
+      ALTER TABLE sales
+      ADD COLUMN IF NOT EXISTS cash_amount NUMERIC(12,2) DEFAULT 0;
+
+      ALTER TABLE sales
+      ADD COLUMN IF NOT EXISTS card_amount NUMERIC(12,2) DEFAULT 0;
+
+      ALTER TABLE sales
+      ADD COLUMN IF NOT EXISTS is_edited BOOLEAN DEFAULT FALSE;
+
+      ALTER TABLE sales
+      ADD COLUMN IF NOT EXISTS edit_reason TEXT;
     `);
 
     const permissions = [
@@ -1597,6 +1609,7 @@ app.get(
 );
 
 // Create product
+// Create product
 app.post(
   "/api/products",
   authMiddleware,
@@ -1723,6 +1736,34 @@ app.post(
         );
       }
 
+      // Audit log for product creation
+      await client.query(
+        `
+        INSERT INTO audit_logs (
+          organisation_id,
+          user_id,
+          action,
+          table_name,
+          record_id,
+          details
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          req.user.organisation_id,
+          req.user.id,
+          "created product",
+          "products",
+          product.id,
+          JSON.stringify({
+            productName: product.name,
+            sku: product.sku,
+            sellingPrice: product.selling_price,
+            stockQuantity: product.stock_quantity,
+          }),
+        ]
+      );
+
       await client.query("COMMIT");
 
       res.status(201).json({
@@ -1841,6 +1882,8 @@ app.patch(
       const { id } = req.params;
       const { movementType, quantity, reason } = req.body;
 
+      const quantityNumber = Number(quantity);
+
       if (!movementType || quantity === undefined) {
         return res.status(400).json({
           status: "error",
@@ -1855,11 +1898,18 @@ app.patch(
         });
       }
 
+      if (Number.isNaN(quantityNumber) || quantityNumber <= 0) {
+        return res.status(400).json({
+          status: "error",
+          message: "Quantity must be a number greater than 0",
+        });
+      }
+
       await client.query("BEGIN");
 
       const productCheck = await client.query(
         `
-        SELECT id, stock_quantity
+        SELECT id, name, sku, stock_quantity
         FROM products
         WHERE id = $1 AND organisation_id = $2
         `,
@@ -1874,19 +1924,21 @@ app.patch(
         });
       }
 
-      const currentStock = productCheck.rows[0].stock_quantity;
+      const productBeforeUpdate = productCheck.rows[0];
+      const currentStock = Number(productBeforeUpdate.stock_quantity);
+
       let newStock;
       let movementQuantity;
 
       if (movementType === "increase") {
-        newStock = currentStock + quantity;
-        movementQuantity = quantity;
+        newStock = currentStock + quantityNumber;
+        movementQuantity = quantityNumber;
       } else if (movementType === "decrease") {
-        newStock = currentStock - quantity;
-        movementQuantity = -quantity;
+        newStock = currentStock - quantityNumber;
+        movementQuantity = -quantityNumber;
       } else {
-        newStock = quantity;
-        movementQuantity = quantity - currentStock;
+        newStock = quantityNumber;
+        movementQuantity = quantityNumber - currentStock;
       }
 
       if (newStock < 0) {
@@ -1926,6 +1978,37 @@ app.patch(
           movementQuantity,
           reason || "Manual stock adjustment",
           req.user.id,
+        ]
+      );
+
+      await client.query(
+        `
+        INSERT INTO audit_logs (
+          organisation_id,
+          user_id,
+          action,
+          table_name,
+          record_id,
+          details
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          req.user.organisation_id,
+          req.user.id,
+          "updated stock",
+          "products",
+          id,
+          JSON.stringify({
+            productName: productBeforeUpdate.name,
+            sku: productBeforeUpdate.sku,
+            movementType,
+            quantity: quantityNumber,
+            movementQuantity,
+            previousStock: currentStock,
+            newStock,
+            reason: reason || "Manual stock adjustment",
+          }),
         ]
       );
 
@@ -2011,13 +2094,23 @@ app.post(
         customerId,
         items,
         discountAmount,
+        taxAmount,
         paymentMethod,
+        cashAmount,
+        cardAmount,
       } = req.body;
 
       if (!items || !Array.isArray(items) || items.length === 0) {
         return res.status(400).json({
           status: "error",
           message: "Sale items are required",
+        });
+      }
+
+      if (!["cash", "card", "split"].includes(paymentMethod)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Payment method must be cash, card, or split",
         });
       }
 
@@ -2058,7 +2151,7 @@ app.post(
 
         const product = productResult.rows[0];
 
-        if (product.stock_quantity < quantity) {
+        if (Number(product.stock_quantity) < Number(quantity)) {
           await client.query("ROLLBACK");
           return res.status(400).json({
             status: "error",
@@ -2067,14 +2160,14 @@ app.post(
         }
 
         const unitPrice = Number(product.selling_price);
-        const totalPrice = unitPrice * quantity;
+        const totalPrice = unitPrice * Number(quantity);
 
         subtotal += totalPrice;
 
         saleItems.push({
           productId: product.id,
           productName: product.name,
-          quantity,
+          quantity: Number(quantity),
           unitPrice,
           totalPrice,
         });
@@ -2082,7 +2175,7 @@ app.post(
 
       const orgResult = await client.query(
         `
-        SELECT tax_rate, invoice_prefix
+        SELECT invoice_prefix
         FROM organisations
         WHERE id = $1
         `,
@@ -2092,10 +2185,26 @@ app.post(
       const organisation = orgResult.rows[0];
 
       const finalDiscount = Number(discountAmount || 0);
-      const taxableAmount = subtotal - finalDiscount;
-      const taxRate = Number(organisation.tax_rate || 0);
-      const taxAmount = taxableAmount * (taxRate / 100);
-      const totalAmount = taxableAmount + taxAmount;
+      const finalTaxAmount = Number(taxAmount || 0);
+      const totalAmount = subtotal - finalDiscount + finalTaxAmount;
+
+      const finalCashAmount =
+        paymentMethod === "cash" ? totalAmount : Number(cashAmount || 0);
+
+      const finalCardAmount =
+        paymentMethod === "card" ? totalAmount : Number(cardAmount || 0);
+
+      if (paymentMethod === "split") {
+        const paidTotal = finalCashAmount + finalCardAmount;
+
+        if (Number(paidTotal.toFixed(2)) !== Number(totalAmount.toFixed(2))) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message: "Cash amount + card amount must match the total amount",
+          });
+        }
+      }
 
       const saleCountResult = await client.query(
         `
@@ -2122,9 +2231,11 @@ app.post(
           tax_amount,
           total_amount,
           payment_method,
+          cash_amount,
+          card_amount,
           status
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'completed')
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'completed')
         RETURNING *
         `,
         [
@@ -2134,9 +2245,11 @@ app.post(
           saleNumber,
           subtotal,
           finalDiscount,
-          taxAmount,
+          finalTaxAmount,
           totalAmount,
-          paymentMethod || "cash",
+          paymentMethod,
+          finalCashAmount,
+          finalCardAmount,
         ]
       );
 
@@ -2197,6 +2310,34 @@ app.post(
         );
       }
 
+      await client.query(
+        `
+        INSERT INTO audit_logs (
+          organisation_id,
+          user_id,
+          action,
+          table_name,
+          record_id,
+          details
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          req.user.organisation_id,
+          req.user.id,
+          "created sale",
+          "sales",
+          sale.id,
+          JSON.stringify({
+            saleNumber,
+            paymentMethod,
+            totalAmount,
+            cashAmount: finalCashAmount,
+            cardAmount: finalCardAmount,
+          }),
+        ]
+      );
+
       await client.query("COMMIT");
 
       res.status(201).json({
@@ -2215,6 +2356,277 @@ app.post(
       res.status(500).json({
         status: "error",
         message: "Failed to create sale",
+        error: error.message,
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// Edit sale
+app.patch(
+  "/api/sales/:id",
+  authMiddleware,
+  requirePermission("sales.create"),
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const { id } = req.params;
+      const {
+        items,
+        discountAmount,
+        taxAmount,
+        paymentMethod,
+        cashAmount,
+        cardAmount,
+        editReason,
+      } = req.body;
+
+      if (!editReason || !editReason.trim()) {
+        return res.status(400).json({
+          status: "error",
+          message: "Edit reason is required",
+        });
+      }
+
+      if (!items || !Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({
+          status: "error",
+          message: "Sale items are required",
+        });
+      }
+
+      await client.query("BEGIN");
+
+      const saleCheck = await client.query(
+        `
+        SELECT *
+        FROM sales
+        WHERE id = $1 AND organisation_id = $2
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (saleCheck.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({
+          status: "error",
+          message: "Sale not found",
+        });
+      }
+
+      const oldSale = saleCheck.rows[0];
+
+      const oldItemsResult = await client.query(
+        `
+        SELECT *
+        FROM sale_items
+        WHERE sale_id = $1
+        `,
+        [id]
+      );
+
+      for (const oldItem of oldItemsResult.rows) {
+        if (oldItem.product_id) {
+          await client.query(
+            `
+            UPDATE products
+            SET stock_quantity = stock_quantity + $1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2 AND organisation_id = $3
+            `,
+            [oldItem.quantity, oldItem.product_id, req.user.organisation_id]
+          );
+        }
+      }
+
+      await client.query(`DELETE FROM sale_items WHERE sale_id = $1`, [id]);
+
+      let subtotal = 0;
+      const newSaleItems = [];
+
+      for (const item of items) {
+        const { productId, quantity } = item;
+
+        const productResult = await client.query(
+          `
+          SELECT id, name, selling_price, stock_quantity
+          FROM products
+          WHERE id = $1 
+          AND organisation_id = $2
+          AND is_active = true
+          `,
+          [productId, req.user.organisation_id]
+        );
+
+        if (productResult.rows.length === 0) {
+          await client.query("ROLLBACK");
+          return res.status(404).json({
+            status: "error",
+            message: `Product not found: ${productId}`,
+          });
+        }
+
+        const product = productResult.rows[0];
+
+        if (Number(product.stock_quantity) < Number(quantity)) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message: `Not enough stock for ${product.name}. Available stock: ${product.stock_quantity}`,
+          });
+        }
+
+        const unitPrice = Number(product.selling_price);
+        const totalPrice = unitPrice * Number(quantity);
+
+        subtotal += totalPrice;
+
+        newSaleItems.push({
+          productId: product.id,
+          productName: product.name,
+          quantity: Number(quantity),
+          unitPrice,
+          totalPrice,
+        });
+      }
+
+      const finalDiscount = Number(discountAmount || 0);
+      const finalTaxAmount = Number(taxAmount || 0);
+      const totalAmount = subtotal - finalDiscount + finalTaxAmount;
+
+      const finalCashAmount =
+        paymentMethod === "cash" ? totalAmount : Number(cashAmount || 0);
+
+      const finalCardAmount =
+        paymentMethod === "card" ? totalAmount : Number(cardAmount || 0);
+
+      if (paymentMethod === "split") {
+        const paidTotal = finalCashAmount + finalCardAmount;
+
+        if (Number(paidTotal.toFixed(2)) !== Number(totalAmount.toFixed(2))) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message: "Cash amount + card amount must match the total amount",
+          });
+        }
+      }
+
+      const updatedSaleResult = await client.query(
+        `
+        UPDATE sales
+        SET
+          subtotal = $1,
+          discount_amount = $2,
+          tax_amount = $3,
+          total_amount = $4,
+          payment_method = $5,
+          cash_amount = $6,
+          card_amount = $7,
+          is_edited = TRUE,
+          edit_reason = $8,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $9 AND organisation_id = $10
+        RETURNING *
+        `,
+        [
+          subtotal,
+          finalDiscount,
+          finalTaxAmount,
+          totalAmount,
+          paymentMethod,
+          finalCashAmount,
+          finalCardAmount,
+          editReason,
+          id,
+          req.user.organisation_id,
+        ]
+      );
+
+      const updatedSale = updatedSaleResult.rows[0];
+
+      for (const item of newSaleItems) {
+        await client.query(
+          `
+          INSERT INTO sale_items (
+            sale_id,
+            product_id,
+            product_name,
+            quantity,
+            unit_price,
+            total_price
+          )
+          VALUES ($1, $2, $3, $4, $5, $6)
+          `,
+          [
+            id,
+            item.productId,
+            item.productName,
+            item.quantity,
+            item.unitPrice,
+            item.totalPrice,
+          ]
+        );
+
+        await client.query(
+          `
+          UPDATE products
+          SET stock_quantity = stock_quantity - $1,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = $2 AND organisation_id = $3
+          `,
+          [item.quantity, item.productId, req.user.organisation_id]
+        );
+      }
+
+      await client.query(
+        `
+        INSERT INTO audit_logs (
+          organisation_id,
+          user_id,
+          action,
+          table_name,
+          record_id,
+          details
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          req.user.organisation_id,
+          req.user.id,
+          "edited sale",
+          "sales",
+          id,
+          JSON.stringify({
+            saleNumber: oldSale.sale_number,
+            previousTotal: oldSale.total_amount,
+            newTotal: totalAmount,
+            reason: editReason,
+          }),
+        ]
+      );
+
+      await client.query("COMMIT");
+
+      res.json({
+        status: "success",
+        message: "Sale edited successfully",
+        sale: {
+          ...updatedSale,
+          items: newSaleItems,
+        },
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+
+      console.error("Edit sale error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to edit sale",
         error: error.message,
       });
     } finally {
@@ -2925,6 +3337,91 @@ app.patch(
       res.status(500).json({
         status: "error",
         message: "Failed to update settings",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// =========================
+// AUDIT LOGS API
+// =========================
+
+app.get(
+  "/api/audit-logs",
+  authMiddleware,
+  requirePermission("dashboard.view"),
+  async (req, res) => {
+    try {
+      const { tableName, page = 1, limit = 25 } = req.query;
+
+      const pageNumber = Math.max(Number(page), 1);
+      const limitNumber = Math.min(Math.max(Number(limit), 1), 100);
+      const offset = (pageNumber - 1) * limitNumber;
+
+      let whereClause = `
+        WHERE audit_logs.organisation_id = $1
+      `;
+
+      const values = [req.user.organisation_id];
+      let count = 2;
+
+      if (tableName) {
+        whereClause += ` AND audit_logs.table_name = $${count}`;
+        values.push(tableName);
+        count++;
+      }
+
+      const logsQuery = `
+        SELECT
+          audit_logs.id,
+          audit_logs.action,
+          audit_logs.table_name,
+          audit_logs.record_id,
+          audit_logs.details,
+          audit_logs.created_at,
+          users.full_name,
+          roles.name AS role_name
+        FROM audit_logs
+        LEFT JOIN users ON audit_logs.user_id = users.id
+        LEFT JOIN roles ON users.role_id = roles.id
+        ${whereClause}
+        ORDER BY audit_logs.created_at DESC
+        LIMIT $${count} OFFSET $${count + 1}
+      `;
+
+      const logsResult = await pool.query(logsQuery, [
+        ...values,
+        limitNumber,
+        offset,
+      ]);
+
+      const countQuery = `
+        SELECT COUNT(*) AS total
+        FROM audit_logs
+        ${whereClause}
+      `;
+
+      const countResult = await pool.query(countQuery, values);
+      const total = Number(countResult.rows[0].total);
+      const totalPages = Math.ceil(total / limitNumber) || 1;
+
+      res.json({
+        status: "success",
+        logs: logsResult.rows,
+        pagination: {
+          page: pageNumber,
+          limit: limitNumber,
+          total,
+          totalPages,
+        },
+      });
+    } catch (error) {
+      console.error("Get audit logs error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get audit logs",
         error: error.message,
       });
     }
