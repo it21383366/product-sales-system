@@ -1550,3 +1550,8 @@ th {
 .danger-confirm-btn:hover {
   background: #b91c1c;
 }
+
+.muted-action-text {
+  color: var(--muted);
+  font-size: 12px;
+}

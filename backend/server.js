@@ -714,7 +714,8 @@ app.post(
 
       const roleCheck = await pool.query(
         `
-        SELECT id FROM roles
+        SELECT id, name
+        FROM roles
         WHERE id = $1 AND organisation_id = $2
         `,
         [roleId, req.user.organisation_id]
@@ -724,6 +725,18 @@ app.post(
         return res.status(400).json({
           status: "error",
           message: "Invalid role selected",
+        });
+      }
+
+      const selectedRole = roleCheck.rows[0];
+
+      if (
+        selectedRole.name === "Admin" &&
+        !req.user.permissions.includes("roles.manage")
+      ) {
+        return res.status(403).json({
+          status: "error",
+          message: "Only admins can create another admin user",
         });
       }
 
@@ -798,7 +811,8 @@ app.patch(
       if (roleId) {
         const roleCheck = await pool.query(
           `
-          SELECT id FROM roles
+          SELECT id, name
+          FROM roles
           WHERE id = $1 AND organisation_id = $2
           `,
           [roleId, req.user.organisation_id]
@@ -808,6 +822,18 @@ app.patch(
           return res.status(400).json({
             status: "error",
             message: "Invalid role selected",
+          });
+        }
+
+        const selectedRole = roleCheck.rows[0];
+
+        if (
+          selectedRole.name === "Admin" &&
+          !req.user.permissions.includes("roles.manage")
+        ) {
+          return res.status(403).json({
+            status: "error",
+            message: "Only admins can assign admin role",
           });
         }
       }
@@ -989,7 +1015,7 @@ app.get(
   }
 );
 
-// Create default roles for current organisation
+// Create / sync default roles for current organisation
 app.post(
   "/api/roles/create-defaults",
   authMiddleware,
@@ -1002,40 +1028,81 @@ app.post(
 
       const defaultRoles = [
         {
-          name: "Manager",
-          description: "Can manage products, suppliers, sales, and reports",
+          name: "Admin",
+          description: "Full access administrator role",
           permissions: [
             "dashboard.view",
+            "settings.manage",
+
+            "users.view",
+            "users.create",
+            "users.edit",
+            "users.delete",
+
+            "roles.manage",
+
             "products.view",
             "products.create",
             "products.edit",
+            "products.delete",
+
             "suppliers.view",
             "suppliers.create",
             "suppliers.edit",
+            "suppliers.delete",
+
             "sales.view",
             "sales.create",
+            "sales.refund",
+
             "reports.view",
+          ],
+        },
+        {
+          name: "Manager",
+          description:
+            "Can manage daily store operations but cannot change system settings or delete users",
+          permissions: [
+            "dashboard.view",
+
             "users.view",
+            "users.create",
+
+            "products.view",
+            "products.create",
+            "products.edit",
+
+            "suppliers.view",
+            "suppliers.create",
+            "suppliers.edit",
+
+            "sales.view",
+            "sales.create",
+            "sales.refund",
+
+            "reports.view",
           ],
         },
         {
           name: "Cashier",
-          description: "Can search products and create sales",
+          description: "Can view products and create sales",
           permissions: [
             "dashboard.view",
             "products.view",
-            "sales.create",
             "sales.view",
+            "sales.create",
           ],
         },
         {
           name: "Inventory Staff",
-          description: "Can manage products and suppliers",
+          description: "Can manage products, stock, and suppliers",
           permissions: [
             "dashboard.view",
+
             "products.view",
             "products.create",
             "products.edit",
+
             "suppliers.view",
             "suppliers.create",
             "suppliers.edit",
@@ -1043,36 +1110,57 @@ app.post(
         },
       ];
 
-      const createdRoles = [];
+      const syncedRoles = [];
 
       for (const role of defaultRoles) {
-        const roleResult = await client.query(
+        const existingRoleResult = await client.query(
           `
-          INSERT INTO roles (organisation_id, name, description, is_system_role)
-          VALUES ($1, $2, $3, true)
-          ON CONFLICT DO NOTHING
-          RETURNING *
+          SELECT *
+          FROM roles
+          WHERE organisation_id = $1 AND name = $2
           `,
-          [req.user.organisation_id, role.name, role.description]
+          [req.user.organisation_id, role.name]
         );
 
         let roleRecord;
 
-        if (roleResult.rows.length > 0) {
-          roleRecord = roleResult.rows[0];
-        } else {
-          const existingRole = await client.query(
+        if (existingRoleResult.rows.length > 0) {
+          const updatedRoleResult = await client.query(
             `
-            SELECT *
-            FROM roles
-            WHERE organisation_id = $1 AND name = $2
+            UPDATE roles
+            SET description = $1,
+                is_system_role = TRUE,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2 AND organisation_id = $3
+            RETURNING *
             `,
-            [req.user.organisation_id, role.name]
+            [role.description, existingRoleResult.rows[0].id, req.user.organisation_id]
           );
 
-          roleRecord = existingRole.rows[0];
+          roleRecord = updatedRoleResult.rows[0];
+        } else {
+          const createdRoleResult = await client.query(
+            `
+            INSERT INTO roles (organisation_id, name, description, is_system_role)
+            VALUES ($1, $2, $3, TRUE)
+            RETURNING *
+            `,
+            [req.user.organisation_id, role.name, role.description]
+          );
+
+          roleRecord = createdRoleResult.rows[0];
         }
 
+        // Remove all old permissions from this role first
+        await client.query(
+          `
+          DELETE FROM role_permissions
+          WHERE role_id = $1
+          `,
+          [roleRecord.id]
+        );
+
+        // Add only the exact permissions allowed for this role
         for (const permissionCode of role.permissions) {
           await client.query(
             `
@@ -1086,10 +1174,11 @@ app.post(
           );
         }
 
-        createdRoles.push({
+        syncedRoles.push({
           id: roleRecord.id,
           name: roleRecord.name,
           description: roleRecord.description,
+          permissions: role.permissions,
         });
       }
 
@@ -1097,17 +1186,17 @@ app.post(
 
       res.json({
         status: "success",
-        message: "Default roles created successfully",
-        roles: createdRoles,
+        message: "Default roles synced successfully",
+        roles: syncedRoles,
       });
     } catch (error) {
       await client.query("ROLLBACK");
 
-      console.error("Create default roles error:", error.message);
+      console.error("Sync default roles error:", error.message);
 
       res.status(500).json({
         status: "error",
-        message: "Failed to create default roles",
+        message: "Failed to sync default roles",
         error: error.message,
       });
     } finally {

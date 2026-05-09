@@ -27,6 +27,13 @@ function Users() {
     roleId: "",
   });
 
+  const savedUser = JSON.parse(localStorage.getItem("user") || "{}");
+  const permissions = savedUser.permissions || [];
+
+  const hasPermission = (permission) => {
+    return permissions.includes(permission);
+  };
+
   const totalPages = Math.ceil(users.length / USERS_PER_PAGE) || 1;
 
   const paginatedUsers = useMemo(() => {
@@ -90,6 +97,7 @@ function Users() {
   const openEditUser = (user) => {
     setEditMode(true);
     setEditingUserId(user.id);
+
     setForm({
       fullName: user.full_name || "",
       email: user.email || "",
@@ -184,13 +192,13 @@ function Users() {
     const newStatus = user.status === "active" ? "inactive" : "active";
 
     setConfirmAction({
-        type: "status",
-        title: newStatus === "active" ? "Activate User" : "Deactivate User",
-        message: `Are you sure you want to ${
+      type: "status",
+      title: newStatus === "active" ? "Activate User" : "Deactivate User",
+      message: `Are you sure you want to ${
         newStatus === "active" ? "activate" : "deactivate"
-        } ${user.full_name}?`,
-        user,
-        newStatus,
+      } ${user.full_name}?`,
+      user,
+      newStatus,
     });
 
     setShowConfirmModal(true);
@@ -198,48 +206,48 @@ function Users() {
 
   const handleDeleteUser = (user) => {
     setConfirmAction({
-        type: "delete",
-        title: "Delete User",
-        message: `Are you sure you want to delete ${user.full_name}? This cannot be undone.`,
-        user,
+      type: "delete",
+      title: "Delete User",
+      message: `Are you sure you want to delete ${user.full_name}? This cannot be undone.`,
+      user,
     });
 
     setShowConfirmModal(true);
   };
 
-    const handleConfirmAction = async () => {
+  const handleConfirmAction = async () => {
     if (!confirmAction) return;
 
     try {
-        setError("");
-        setMessage("");
+      setError("");
+      setMessage("");
 
-        if (confirmAction.type === "status") {
+      if (confirmAction.type === "status") {
         await api.patch(`/api/users/${confirmAction.user.id}/status`, {
-            status: confirmAction.newStatus,
+          status: confirmAction.newStatus,
         });
 
         setMessage(
-            `User ${
+          `User ${
             confirmAction.newStatus === "active" ? "activated" : "deactivated"
-            } successfully`
+          } successfully`
         );
-        }
+      }
 
-        if (confirmAction.type === "delete") {
+      if (confirmAction.type === "delete") {
         await api.delete(`/api/users/${confirmAction.user.id}`);
         setMessage("User deleted successfully");
-        }
+      }
 
-        setShowConfirmModal(false);
-        setConfirmAction(null);
-        fetchUsers();
+      setShowConfirmModal(false);
+      setConfirmAction(null);
+      fetchUsers();
     } catch (err) {
-        setShowConfirmModal(false);
-        setConfirmAction(null);
-        setError(err.response?.data?.message || "Action failed");
+      setShowConfirmModal(false);
+      setConfirmAction(null);
+      setError(err.response?.data?.message || "Action failed");
     }
-    };
+  };
 
   return (
     <div className="users-page">
@@ -262,9 +270,11 @@ function Users() {
             </p>
           </div>
 
-          <button className="primary-btn add-product-btn" onClick={openAddUser}>
-            + Add User
-          </button>
+          {hasPermission("users.create") && (
+            <button className="primary-btn add-product-btn" onClick={openAddUser}>
+              + Add User
+            </button>
+          )}
         </div>
 
         <div className="table-wrapper">
@@ -308,26 +318,37 @@ function Users() {
                   </td>
                   <td>
                     <div className="table-actions">
-                      <button
-                        className="small-btn"
-                        onClick={() => openEditUser(user)}
-                      >
-                        Edit
-                      </button>
+                      {hasPermission("users.edit") && (
+                        <>
+                          <button
+                            className="small-btn"
+                            onClick={() => openEditUser(user)}
+                          >
+                            Edit
+                          </button>
 
-                      <button
-                        className="small-btn secondary-table-btn"
-                        onClick={() => handleStatusChange(user)}
-                      >
-                        {user.status === "active" ? "Deactivate" : "Activate"}
-                      </button>
+                          <button
+                            className="small-btn secondary-table-btn"
+                            onClick={() => handleStatusChange(user)}
+                          >
+                            {user.status === "active" ? "Deactivate" : "Activate"}
+                          </button>
+                        </>
+                      )}
 
-                      <button
-                        className="small-btn danger-table-btn"
-                        onClick={() => handleDeleteUser(user)}
-                      >
-                        Delete
-                      </button>
+                      {hasPermission("users.delete") && (
+                        <button
+                          className="small-btn danger-table-btn"
+                          onClick={() => handleDeleteUser(user)}
+                        >
+                          Delete
+                        </button>
+                      )}
+
+                      {!hasPermission("users.edit") &&
+                        !hasPermission("users.delete") && (
+                          <span className="muted-action-text">No actions</span>
+                        )}
                     </div>
                   </td>
                 </tr>
@@ -503,57 +524,57 @@ function Users() {
 
       {showConfirmModal && confirmAction && (
         <div className="modal-overlay">
-            <div className="confirm-modal">
+          <div className="confirm-modal">
             <div className="modal-header">
-                <div>
+              <div>
                 <h3>{confirmAction.title}</h3>
                 <p>{confirmAction.message}</p>
-                </div>
+              </div>
 
-                <button
+              <button
                 className="modal-close-btn"
                 onClick={() => {
-                    setShowConfirmModal(false);
-                    setConfirmAction(null);
+                  setShowConfirmModal(false);
+                  setConfirmAction(null);
                 }}
-                >
+              >
                 ×
-                </button>
+              </button>
             </div>
 
             <div className="confirm-user-box">
-                <span>User</span>
-                <strong>{confirmAction.user.full_name}</strong>
-                <small>{confirmAction.user.email}</small>
+              <span>User</span>
+              <strong>{confirmAction.user.full_name}</strong>
+              <small>{confirmAction.user.email}</small>
             </div>
 
             <div className="modal-actions">
-                <button
+              <button
                 type="button"
                 className="secondary-btn"
                 onClick={() => {
-                    setShowConfirmModal(false);
-                    setConfirmAction(null);
+                  setShowConfirmModal(false);
+                  setConfirmAction(null);
                 }}
-                >
+              >
                 Cancel
-                </button>
+              </button>
 
-                <button
+              <button
                 type="button"
                 className={
-                    confirmAction.type === "delete"
+                  confirmAction.type === "delete"
                     ? "primary-btn danger-confirm-btn"
                     : "primary-btn"
                 }
                 onClick={handleConfirmAction}
-                >
+              >
                 Confirm
-                </button>
+              </button>
             </div>
-            </div>
+          </div>
         </div>
-        )}
+      )}
     </div>
   );
 }
