@@ -296,6 +296,36 @@ function Users() {
     }
     };
 
+    const getRoleLevel = (roleName) => {
+        const levels = {
+            Admin: 1,
+            Manager: 2,
+            Cashier: 3,
+            "Inventory Staff": 3,
+        };
+
+        return levels[roleName] || 99;
+        };
+
+        const roleOrder = {
+        Admin: 1,
+        Manager: 2,
+        Cashier: 3,
+        "Inventory Staff": 3,
+        };
+
+        const currentUserRole = savedUser.role;
+        const currentUserLevel = getRoleLevel(currentUserRole);
+
+        const sortedRoles = [...roles].sort((a, b) => {
+        return (roleOrder[a.name] || 99) - (roleOrder[b.name] || 99);
+        });
+
+        const assignableRoles = sortedRoles.filter((role) => {
+        if (currentUserRole === "Admin") return true;
+        return getRoleLevel(role.name) > currentUserLevel;
+        });
+
     const togglePermission = (permissionCode) => {
     if (selectedPermissions.includes(permissionCode)) {
         setSelectedPermissions(
@@ -538,10 +568,10 @@ function Users() {
                 required
               >
                 <option value="">Select role</option>
-                {roles.map((role) => (
-                  <option key={role.id} value={role.id}>
-                    {role.name}
-                  </option>
+                {assignableRoles.map((role) => (
+                    <option key={role.id} value={role.id}>
+                        {role.name}
+                    </option>
                 ))}
               </select>
 
@@ -685,9 +715,9 @@ function Users() {
                 onChange={(e) => handlePrivilegeRoleChange(e.target.value)}
                 >
                 <option value="">Select role</option>
-                {roles.map((role) => (
+                {sortedRoles.map((role) => (
                     <option key={role.id} value={role.id}>
-                    {role.name}
+                        {role.name}
                     </option>
                 ))}
                 </select>

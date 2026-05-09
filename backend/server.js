@@ -677,6 +677,30 @@ app.get(
   }
 );
 
+const getRoleLevel = (roleName) => {
+  const levels = {
+    Admin: 1,
+    Manager: 2,
+    Cashier: 3,
+    "Inventory Staff": 3,
+  };
+
+  return levels[roleName] || 99;
+};
+
+const canAssignRole = (currentUserRole, targetRoleName) => {
+  const currentLevel = getRoleLevel(currentUserRole);
+  const targetLevel = getRoleLevel(targetRoleName);
+
+  // Admin can assign any role
+  if (currentUserRole === "Admin") {
+    return true;
+  }
+
+  // Others can only assign roles lower than themselves
+  return targetLevel > currentLevel;
+};
+
 // Create a new user/employee
 app.post(
   "/api/users",
@@ -725,6 +749,15 @@ app.post(
         return res.status(400).json({
           status: "error",
           message: "Invalid role selected",
+        });
+      }
+
+      const selectedRole = roleCheck.rows[0];
+
+      if (!canAssignRole(req.user.role_name, selectedRole.name)) {
+        return res.status(403).json({
+          status: "error",
+          message: `You cannot create a ${selectedRole.name} user`,
         });
       }
 
@@ -822,6 +855,15 @@ app.patch(
           return res.status(400).json({
             status: "error",
             message: "Invalid role selected",
+          });
+        }
+
+        const selectedRole = roleCheck.rows[0];
+
+        if (!canAssignRole(req.user.role_name, selectedRole.name)) {
+          return res.status(403).json({
+            status: "error",
+            message: `You cannot assign ${selectedRole.name} role`,
           });
         }
 
@@ -1901,7 +1943,6 @@ app.get(
   }
 );
 
-// Create product
 // Create product
 app.post(
   "/api/products",
