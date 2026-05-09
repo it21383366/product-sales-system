@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import api from "../api/api";
 
-function Settings() {
+function Settings({ onSettingsUpdated }) {
   const [settings, setSettings] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -88,7 +88,7 @@ function Settings() {
       setError("");
       setMessage("");
 
-      await api.patch("/api/settings", {
+      const response = await api.patch("/api/settings", {
         name: form.name,
         email: form.email,
         phone: form.phone,
@@ -96,11 +96,28 @@ function Settings() {
         currency: form.currency,
         invoicePrefix: form.invoicePrefix,
         themeColor: form.themeColor,
-      });
+        });
 
-      setMessage("Settings updated successfully");
-      setShowReviewModal(false);
-      fetchSettings();
+        setMessage("Settings updated successfully");
+        setShowReviewModal(false);
+
+        const updatedSettings = response.data.settings;
+
+        setSettings(updatedSettings);
+
+        setForm({
+        name: updatedSettings.name || "",
+        email: updatedSettings.email || "",
+        phone: updatedSettings.phone || "",
+        address: updatedSettings.address || "",
+        currency: updatedSettings.currency || "AUD",
+        invoicePrefix: updatedSettings.invoice_prefix || "INV",
+        themeColor: updatedSettings.theme_color || "#2563eb",
+        });
+
+        if (onSettingsUpdated) {
+        onSettingsUpdated();
+        }
     } catch (err) {
       setShowReviewModal(false);
       setModalError(err.response?.data?.message || "Failed to update settings");
