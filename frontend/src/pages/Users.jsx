@@ -14,6 +14,8 @@ function Users() {
 
   const [showUserModal, setShowUserModal] = useState(false);
   const [showReviewModal, setShowReviewModal] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [confirmAction, setConfirmAction] = useState(null);
   const [editMode, setEditMode] = useState(false);
   const [editingUserId, setEditingUserId] = useState(null);
 
@@ -178,49 +180,66 @@ function Users() {
     }
   };
 
-  const handleStatusChange = async (user) => {
+  const handleStatusChange = (user) => {
     const newStatus = user.status === "active" ? "inactive" : "active";
 
-    const confirmed = window.confirm(
-      `Are you sure you want to ${newStatus === "active" ? "activate" : "deactivate"} ${user.full_name}?`
-    );
+    setConfirmAction({
+        type: "status",
+        title: newStatus === "active" ? "Activate User" : "Deactivate User",
+        message: `Are you sure you want to ${
+        newStatus === "active" ? "activate" : "deactivate"
+        } ${user.full_name}?`,
+        user,
+        newStatus,
+    });
 
-    if (!confirmed) return;
-
-    try {
-      setError("");
-      setMessage("");
-
-      await api.patch(`/api/users/${user.id}/status`, {
-        status: newStatus,
-      });
-
-      setMessage(`User ${newStatus === "active" ? "activated" : "deactivated"} successfully`);
-      fetchUsers();
-    } catch (err) {
-      setError(err.response?.data?.message || "Failed to update user status");
-    }
+    setShowConfirmModal(true);
   };
 
-  const handleDeleteUser = async (user) => {
-    const confirmed = window.confirm(
-      `Are you sure you want to delete ${user.full_name}? This cannot be undone.`
-    );
+  const handleDeleteUser = (user) => {
+    setConfirmAction({
+        type: "delete",
+        title: "Delete User",
+        message: `Are you sure you want to delete ${user.full_name}? This cannot be undone.`,
+        user,
+    });
 
-    if (!confirmed) return;
+    setShowConfirmModal(true);
+  };
+
+    const handleConfirmAction = async () => {
+    if (!confirmAction) return;
 
     try {
-      setError("");
-      setMessage("");
+        setError("");
+        setMessage("");
 
-      await api.delete(`/api/users/${user.id}`);
+        if (confirmAction.type === "status") {
+        await api.patch(`/api/users/${confirmAction.user.id}/status`, {
+            status: confirmAction.newStatus,
+        });
 
-      setMessage("User deleted successfully");
-      fetchUsers();
+        setMessage(
+            `User ${
+            confirmAction.newStatus === "active" ? "activated" : "deactivated"
+            } successfully`
+        );
+        }
+
+        if (confirmAction.type === "delete") {
+        await api.delete(`/api/users/${confirmAction.user.id}`);
+        setMessage("User deleted successfully");
+        }
+
+        setShowConfirmModal(false);
+        setConfirmAction(null);
+        fetchUsers();
     } catch (err) {
-      setError(err.response?.data?.message || "Failed to delete user");
+        setShowConfirmModal(false);
+        setConfirmAction(null);
+        setError(err.response?.data?.message || "Action failed");
     }
-  };
+    };
 
   return (
     <div className="users-page">
@@ -481,6 +500,60 @@ function Users() {
           )}
         </div>
       )}
+
+      {showConfirmModal && confirmAction && (
+        <div className="modal-overlay">
+            <div className="confirm-modal">
+            <div className="modal-header">
+                <div>
+                <h3>{confirmAction.title}</h3>
+                <p>{confirmAction.message}</p>
+                </div>
+
+                <button
+                className="modal-close-btn"
+                onClick={() => {
+                    setShowConfirmModal(false);
+                    setConfirmAction(null);
+                }}
+                >
+                ×
+                </button>
+            </div>
+
+            <div className="confirm-user-box">
+                <span>User</span>
+                <strong>{confirmAction.user.full_name}</strong>
+                <small>{confirmAction.user.email}</small>
+            </div>
+
+            <div className="modal-actions">
+                <button
+                type="button"
+                className="secondary-btn"
+                onClick={() => {
+                    setShowConfirmModal(false);
+                    setConfirmAction(null);
+                }}
+                >
+                Cancel
+                </button>
+
+                <button
+                type="button"
+                className={
+                    confirmAction.type === "delete"
+                    ? "primary-btn danger-confirm-btn"
+                    : "primary-btn"
+                }
+                onClick={handleConfirmAction}
+                >
+                Confirm
+                </button>
+            </div>
+            </div>
+        </div>
+        )}
     </div>
   );
 }
