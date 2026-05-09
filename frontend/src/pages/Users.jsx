@@ -19,6 +19,12 @@ function Users() {
   const [editMode, setEditMode] = useState(false);
   const [editingUserId, setEditingUserId] = useState(null);
 
+  const [showPrivilegeModal, setShowPrivilegeModal] = useState(false);
+  const [allPermissions, setAllPermissions] = useState([]);
+  const [selectedPrivilegeRoleId, setSelectedPrivilegeRoleId] = useState("");
+  const [selectedPermissions, setSelectedPermissions] = useState([]);
+  const [privilegeError, setPrivilegeError] = useState("");
+
   const [form, setForm] = useState({
     fullName: "",
     email: "",
@@ -249,6 +255,79 @@ function Users() {
     }
   };
 
+  const fetchAllPermissions = async () => {
+    try {
+        const response = await api.get("/api/permissions");
+        setAllPermissions(response.data.permissions);
+    } catch (err) {
+        setPrivilegeError(err.response?.data?.message || "Failed to load permissions");
+    }
+    };
+
+    const openPrivilegeModal = async () => {
+    setPrivilegeError("");
+    setSelectedPrivilegeRoleId("");
+    setSelectedPermissions([]);
+    await fetchAllPermissions();
+    setShowPrivilegeModal(true);
+    };
+
+    const closePrivilegeModal = () => {
+    setShowPrivilegeModal(false);
+    setSelectedPrivilegeRoleId("");
+    setSelectedPermissions([]);
+    setPrivilegeError("");
+    };
+
+    const handlePrivilegeRoleChange = async (roleId) => {
+    setSelectedPrivilegeRoleId(roleId);
+    setSelectedPermissions([]);
+    setPrivilegeError("");
+
+    if (!roleId) return;
+
+    try {
+        const response = await api.get(`/api/roles/${roleId}/permissions`);
+        setSelectedPermissions(response.data.permissions);
+    } catch (err) {
+        setPrivilegeError(
+        err.response?.data?.message || "Failed to load role permissions"
+        );
+    }
+    };
+
+    const togglePermission = (permissionCode) => {
+    if (selectedPermissions.includes(permissionCode)) {
+        setSelectedPermissions(
+        selectedPermissions.filter((code) => code !== permissionCode)
+        );
+    } else {
+        setSelectedPermissions([...selectedPermissions, permissionCode]);
+    }
+    };
+
+    const saveRolePrivileges = async () => {
+    try {
+        setPrivilegeError("");
+
+        if (!selectedPrivilegeRoleId) {
+        setPrivilegeError("Please select a role");
+        return;
+        }
+
+        await api.patch(`/api/roles/${selectedPrivilegeRoleId}/permissions`, {
+        permissions: selectedPermissions,
+        });
+
+        setMessage("Role privileges updated successfully");
+        closePrivilegeModal();
+    } catch (err) {
+        setPrivilegeError(
+        err.response?.data?.message || "Failed to update role privileges"
+        );
+    }
+    };
+
   return (
     <div className="users-page">
       <div className="page-header">
@@ -270,11 +349,19 @@ function Users() {
             </p>
           </div>
 
-          {hasPermission("users.create") && (
-            <button className="primary-btn add-product-btn" onClick={openAddUser}>
-              + Add User
-            </button>
-          )}
+          <div className="table-header-actions">
+            {hasPermission("roles.manage") && (
+                <button className="secondary-btn" onClick={openPrivilegeModal}>
+                User Privilege Settings
+                </button>
+            )}
+
+            {hasPermission("users.create") && (
+                <button className="primary-btn add-product-btn" onClick={openAddUser}>
+                + Add User
+                </button>
+            )}
+          </div>
         </div>
 
         <div className="table-wrapper">
@@ -575,6 +662,76 @@ function Users() {
           </div>
         </div>
       )}
+      {showPrivilegeModal && (
+        <div className="modal-overlay">
+            <div className="privilege-modal">
+            <div className="modal-header">
+                <div>
+                <h3>User Privilege Settings</h3>
+                <p>Select a role and choose the permissions allowed for that role.</p>
+                </div>
+
+                <button className="modal-close-btn" onClick={closePrivilegeModal}>
+                ×
+                </button>
+            </div>
+
+            {privilegeError && <div className="modal-error">{privilegeError}</div>}
+
+            <div className="product-form">
+                <label>Select User Role</label>
+                <select
+                value={selectedPrivilegeRoleId}
+                onChange={(e) => handlePrivilegeRoleChange(e.target.value)}
+                >
+                <option value="">Select role</option>
+                {roles.map((role) => (
+                    <option key={role.id} value={role.id}>
+                    {role.name}
+                    </option>
+                ))}
+                </select>
+
+                {selectedPrivilegeRoleId && (
+                <div className="permission-list">
+                    {allPermissions.map((permission) => (
+                    <label className="permission-item" key={permission.code}>
+                        <input
+                        type="checkbox"
+                        checked={selectedPermissions.includes(permission.code)}
+                        onChange={() => togglePermission(permission.code)}
+                        />
+
+                        <div>
+                        <strong>{permission.code}</strong>
+                        <span>{permission.name}</span>
+                        </div>
+                    </label>
+                    ))}
+                </div>
+                )}
+
+                <div className="modal-actions">
+                <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={closePrivilegeModal}
+                >
+                    Cancel
+                </button>
+
+                <button
+                    type="button"
+                    className="primary-btn"
+                    onClick={saveRolePrivileges}
+                >
+                    Save Privileges
+                </button>
+                </div>
+            </div>
+            </div>
+        </div>
+        )}
     </div>
   );
 }

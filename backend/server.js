@@ -1205,6 +1205,210 @@ app.post(
   }
 );
 
+// Get all available permissions
+app.get(
+  "/api/permissions",
+  authMiddleware,
+  requirePermission("roles.manage"),
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        SELECT id, code, name, description
+        FROM permissions
+        ORDER BY code ASC
+        `
+      );
+
+      res.json({
+        status: "success",
+        permissions: result.rows,
+      });
+    } catch (error) {
+      console.error("Get permissions error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get permissions",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get permissions for one role
+app.get(
+  "/api/roles/:id/permissions",
+  authMiddleware,
+  requirePermission("roles.manage"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const roleCheck = await pool.query(
+        `
+        SELECT id, name
+        FROM roles
+        WHERE id = $1 AND organisation_id = $2
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (roleCheck.rows.length === 0) {
+        return res.status(404).json({
+          status: "error",
+          message: "Role not found",
+        });
+      }
+
+      const permissionResult = await pool.query(
+        `
+        SELECT permissions.code
+        FROM role_permissions
+        JOIN permissions ON role_permissions.permission_id = permissions.id
+        WHERE role_permissions.role_id = $1
+        `,
+        [id]
+      );
+
+      res.json({
+        status: "success",
+        role: roleCheck.rows[0],
+        permissions: permissionResult.rows.map((row) => row.code),
+      });
+    } catch (error) {
+      console.error("Get role permissions error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get role permissions",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Update permissions for one role
+app.patch(
+  "/api/roles/:id/permissions",
+  authMiddleware,
+  requirePermission("roles.manage"),
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const { id } = req.params;
+      const { permissions } = req.body;
+
+      if (!Array.isArray(permissions)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Permissions must be an array",
+        });
+      }
+
+      await client.query("BEGIN");
+
+      const roleCheck = await client.query(
+        `
+        SELECT id, name
+        FROM roles
+        WHERE id = $1 AND organisation_id = $2
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (roleCheck.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({
+          status: "error",
+          message: "Role not found",
+        });
+      }
+
+      const role = roleCheck.rows[0];
+
+      // Prevent removing roles.manage from Admin accidentally
+      if (role.name === "Admin" && !permissions.includes("roles.manage")) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          status: "error",
+          message: "Admin role must keep roles.manage permission",
+        });
+      }
+
+      // Remove old permissions
+      await client.query(
+        `
+        DELETE FROM role_permissions
+        WHERE role_id = $1
+        `,
+        [id]
+      );
+
+      // Add selected permissions
+      for (const permissionCode of permissions) {
+        await client.query(
+          `
+          INSERT INTO role_permissions (role_id, permission_id)
+          SELECT $1, id
+          FROM permissions
+          WHERE code = $2
+          ON CONFLICT (role_id, permission_id) DO NOTHING
+          `,
+          [id, permissionCode]
+        );
+      }
+
+      await client.query(
+        `
+        INSERT INTO audit_logs (
+          organisation_id,
+          user_id,
+          action,
+          table_name,
+          record_id,
+          details
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          req.user.organisation_id,
+          req.user.id,
+          "updated role privileges",
+          "roles",
+          id,
+          JSON.stringify({
+            roleName: role.name,
+            permissions,
+          }),
+        ]
+      );
+
+      await client.query("COMMIT");
+
+      res.json({
+        status: "success",
+        message: "Role privileges updated successfully",
+        role,
+        permissions,
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+
+      console.error("Update role permissions error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to update role privileges",
+        error: error.message,
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
 // =========================
 // SUPPLIERS API
 // =========================
