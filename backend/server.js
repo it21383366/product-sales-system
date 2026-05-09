@@ -2783,6 +2783,154 @@ app.get(
   }
 );
 
+// =========================
+// ORGANISATION SETTINGS API
+// =========================
+
+// Get current organisation settings
+app.get(
+  "/api/settings",
+  authMiddleware,
+  requirePermission("dashboard.view"),
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        SELECT 
+          id,
+          name,
+          email,
+          phone,
+          address,
+          logo_url,
+          currency,
+          tax_name,
+          tax_rate,
+          invoice_prefix,
+          theme_color,
+          is_active,
+          created_at,
+          updated_at
+        FROM organisations
+        WHERE id = $1
+        `,
+        [req.user.organisation_id]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          status: "error",
+          message: "Organisation not found",
+        });
+      }
+
+      res.json({
+        status: "success",
+        settings: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Get settings error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get settings",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Update organisation settings
+app.patch(
+  "/api/settings",
+  authMiddleware,
+  requirePermission("settings.manage"),
+  async (req, res) => {
+    try {
+      const {
+        name,
+        email,
+        phone,
+        address,
+        logoUrl,
+        currency,
+        taxName,
+        taxRate,
+        invoicePrefix,
+        themeColor,
+      } = req.body;
+
+      const result = await pool.query(
+        `
+        UPDATE organisations
+        SET
+          name = COALESCE($1, name),
+          email = COALESCE($2, email),
+          phone = COALESCE($3, phone),
+          address = COALESCE($4, address),
+          logo_url = COALESCE($5, logo_url),
+          currency = COALESCE($6, currency),
+          tax_name = COALESCE($7, tax_name),
+          tax_rate = COALESCE($8, tax_rate),
+          invoice_prefix = COALESCE($9, invoice_prefix),
+          theme_color = COALESCE($10, theme_color),
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $11
+        RETURNING 
+          id,
+          name,
+          email,
+          phone,
+          address,
+          logo_url,
+          currency,
+          tax_name,
+          tax_rate,
+          invoice_prefix,
+          theme_color,
+          is_active,
+          created_at,
+          updated_at
+        `,
+        [
+          name || null,
+          email || null,
+          phone || null,
+          address || null,
+          logoUrl || null,
+          currency || null,
+          taxName || null,
+          taxRate !== undefined ? taxRate : null,
+          invoicePrefix || null,
+          themeColor || null,
+          req.user.organisation_id,
+        ]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          status: "error",
+          message: "Organisation not found",
+        });
+      }
+
+      res.json({
+        status: "success",
+        message: "Settings updated successfully",
+        settings: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Update settings error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to update settings",
+        error: error.message,
+      });
+    }
+  }
+);
+
 const PORT = process.env.PORT || 5001;
 
 const server = app.listen(PORT, () => {
