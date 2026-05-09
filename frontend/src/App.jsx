@@ -4,6 +4,7 @@ import axios from "axios";
 import Products from "./pages/Products";
 import Logs from "./pages/Logs";
 import Sales from "./pages/Sales";
+import Users from "./pages/Users";
 import "./App.css";
 
 const API_URL = import.meta.env.VITE_API_URL;
@@ -310,12 +311,7 @@ function App() {
 
           {activePage === "new-sale" && <Sales />}
 
-          {activePage === "users" && (
-            <section className="panel">
-              <h2>Users</h2>
-              <p>User management page coming soon.</p>
-            </section>
-          )}
+          {activePage === "users" && <Users />}
 
           {activePage === "reports" && (
             <section className="panel">

@@ -1481,3 +1481,24 @@ th {
     grid-template-columns: 1fr;
   }
 }
+
+/* USERS PAGE */
+
+.users-page {
+  width: 100%;
+}
+
+.danger-table-btn {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+.danger-table-btn:hover {
+  background: rgba(239, 68, 68, 0.22);
+}
+
+.product-form input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
