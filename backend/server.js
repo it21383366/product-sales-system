@@ -761,18 +761,6 @@ app.post(
         });
       }
 
-      const selectedRole = roleCheck.rows[0];
-
-      if (
-        selectedRole.name === "Admin" &&
-        !req.user.permissions.includes("roles.manage")
-      ) {
-        return res.status(403).json({
-          status: "error",
-          message: "Only admins can create another admin user",
-        });
-      }
-
       const passwordHash = await bcrypt.hash(password, 10);
 
       const result = await pool.query(
