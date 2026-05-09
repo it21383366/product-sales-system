@@ -504,6 +504,124 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
+const authMiddleware = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({
+        status: "error",
+        message: "No token provided",
+      });
+    }
+
+    const token = authHeader.split(" ")[1];
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    const userResult = await pool.query(
+      `
+      SELECT 
+        users.id,
+        users.organisation_id,
+        users.role_id,
+        users.full_name,
+        users.email,
+        users.status,
+        roles.name AS role_name,
+        organisations.name AS organisation_name
+      FROM users
+      LEFT JOIN roles ON users.role_id = roles.id
+      LEFT JOIN organisations ON users.organisation_id = organisations.id
+      WHERE users.id = $1
+      `,
+      [decoded.userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(401).json({
+        status: "error",
+        message: "User not found",
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    if (user.status !== "active") {
+      return res.status(403).json({
+        status: "error",
+        message: "Your account is deactivated",
+      });
+    }
+
+    const permissionResult = await pool.query(
+      `
+      SELECT permissions.code
+      FROM role_permissions
+      JOIN permissions ON role_permissions.permission_id = permissions.id
+      WHERE role_permissions.role_id = $1
+      `,
+      [user.role_id]
+    );
+
+    user.permissions = permissionResult.rows.map((row) => row.code);
+
+    req.user = user;
+
+    next();
+  } catch (error) {
+    return res.status(401).json({
+      status: "error",
+      message: "Invalid or expired token",
+    });
+  }
+};
+
+const requirePermission = (permissionCode) => {
+  return (req, res, next) => {
+    if (!req.user.permissions.includes(permissionCode)) {
+      return res.status(403).json({
+        status: "error",
+        message: "You do not have permission to perform this action",
+        requiredPermission: permissionCode,
+      });
+    }
+
+    next();
+  };
+};
+
+app.get("/api/auth/me", authMiddleware, async (req, res) => {
+  res.json({
+    status: "success",
+    user: {
+      id: req.user.id,
+      organisationId: req.user.organisation_id,
+      organisationName: req.user.organisation_name,
+      fullName: req.user.full_name,
+      email: req.user.email,
+      role: req.user.role_name,
+      permissions: req.user.permissions,
+    },
+  });
+});
+
+app.get(
+  "/api/protected-test",
+  authMiddleware,
+  requirePermission("dashboard.view"),
+  async (req, res) => {
+    res.json({
+      status: "success",
+      message: "You are authenticated and allowed to view dashboard",
+      user: {
+        name: req.user.full_name,
+        role: req.user.role_name,
+        organisation: req.user.organisation_name,
+      },
+    });
+  }
+);
 
 
 const PORT = process.env.PORT || 5001;
