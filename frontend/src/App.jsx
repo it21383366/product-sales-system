@@ -9,10 +9,12 @@ import "./App.css";
 const API_URL = import.meta.env.VITE_API_URL;
 
 function App() {
-  const [token, setToken] = useState(localStorage.getItem("token") || "");
-  const [user, setUser] = useState(
-    JSON.parse(localStorage.getItem("user") || "null")
-  );
+  const [token, setToken] = useState(localStorage.getItem("token"));
+
+  const [user, setUser] = useState(() => {
+    const savedUser = localStorage.getItem("user");
+    return savedUser ? JSON.parse(savedUser) : null;
+  });
 
   const [activePage, setActivePage] = useState("dashboard");
   const [email, setEmail] = useState("");
@@ -24,6 +26,33 @@ function App() {
   const hasPermission = (permission) => {
     return user?.permissions?.includes(permission);
   };
+
+  useEffect(() => {
+    const verifySession = async () => {
+      const savedToken = localStorage.getItem("token");
+
+      if (!savedToken) {
+        setToken(null);
+        setUser(null);
+        return;
+      }
+
+      try {
+        const response = await api.get("/api/auth/me");
+
+        setUser(response.data.user);
+        localStorage.setItem("user", JSON.stringify(response.data.user));
+      } catch (error) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+
+        setToken(null);
+        setUser(null);
+      }
+    };
+
+    verifySession();
+  }, []);
 
   const getPageTitle = () => {
     if (activePage === "dashboard") return "Dashboard";
@@ -82,7 +111,8 @@ function App() {
   const handleLogout = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
-    setToken("");
+
+    setToken(null);
     setUser(null);
     setActivePage("dashboard");
     setUserMenuOpen(false);
