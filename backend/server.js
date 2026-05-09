@@ -1,6 +1,8 @@
 const express = require("express");
 const cors = require("cors");
 const { Pool } = require("pg");
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
 require("dotenv").config();
 
 const app = express();
@@ -257,6 +259,252 @@ app.get("/api/setup-database", async (req, res) => {
     });
   }
 });
+
+app.post("/api/auth/register-organisation", async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const {
+      organisationName,
+      organisationEmail,
+      organisationPhone,
+      organisationAddress,
+      adminFullName,
+      adminEmail,
+      adminPassword,
+    } = req.body;
+
+    if (!organisationName || !adminFullName || !adminEmail || !adminPassword) {
+      return res.status(400).json({
+        status: "error",
+        message: "Organisation name, admin name, admin email, and password are required",
+      });
+    }
+
+    if (adminPassword.length < 6) {
+      return res.status(400).json({
+        status: "error",
+        message: "Password must be at least 6 characters",
+      });
+    }
+
+    await client.query("BEGIN");
+
+    const existingUser = await client.query(
+      "SELECT id FROM users WHERE email = $1",
+      [adminEmail]
+    );
+
+    if (existingUser.rows.length > 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        status: "error",
+        message: "A user with this email already exists",
+      });
+    }
+
+    const organisationResult = await client.query(
+      `
+      INSERT INTO organisations (name, email, phone, address)
+      VALUES ($1, $2, $3, $4)
+      RETURNING *
+      `,
+      [
+        organisationName,
+        organisationEmail || null,
+        organisationPhone || null,
+        organisationAddress || null,
+      ]
+    );
+
+    const organisation = organisationResult.rows[0];
+
+    const adminRoleResult = await client.query(
+      `
+      INSERT INTO roles (organisation_id, name, description, is_system_role)
+      VALUES ($1, $2, $3, $4)
+      RETURNING *
+      `,
+      [
+        organisation.id,
+        "Admin",
+        "Full access administrator role",
+        true,
+      ]
+    );
+
+    const adminRole = adminRoleResult.rows[0];
+
+    await client.query(
+      `
+      INSERT INTO role_permissions (role_id, permission_id)
+      SELECT $1, id FROM permissions
+      ON CONFLICT (role_id, permission_id) DO NOTHING
+      `,
+      [adminRole.id]
+    );
+
+    const passwordHash = await bcrypt.hash(adminPassword, 10);
+
+    const adminUserResult = await client.query(
+      `
+      INSERT INTO users (
+        organisation_id,
+        role_id,
+        full_name,
+        email,
+        password_hash,
+        status
+      )
+      VALUES ($1, $2, $3, $4, $5, 'active')
+      RETURNING id, organisation_id, role_id, full_name, email, status, created_at
+      `,
+      [
+        organisation.id,
+        adminRole.id,
+        adminFullName,
+        adminEmail,
+        passwordHash,
+      ]
+    );
+
+    const adminUser = adminUserResult.rows[0];
+
+    await client.query("COMMIT");
+
+    res.status(201).json({
+      status: "success",
+      message: "Organisation and admin user created successfully",
+      organisation,
+      user: adminUser,
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    console.error("Register organisation error:", error.message);
+
+    res.status(500).json({
+      status: "error",
+      message: "Failed to register organisation",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        status: "error",
+        message: "Email and password are required",
+      });
+    }
+
+    const userResult = await pool.query(
+      `
+      SELECT 
+        users.id,
+        users.organisation_id,
+        users.role_id,
+        users.full_name,
+        users.email,
+        users.password_hash,
+        users.status,
+        roles.name AS role_name,
+        organisations.name AS organisation_name
+      FROM users
+      LEFT JOIN roles ON users.role_id = roles.id
+      LEFT JOIN organisations ON users.organisation_id = organisations.id
+      WHERE users.email = $1
+      `,
+      [email]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(401).json({
+        status: "error",
+        message: "Invalid email or password",
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    if (user.status !== "active") {
+      return res.status(403).json({
+        status: "error",
+        message: "Your account is deactivated. Please contact admin.",
+      });
+    }
+
+    const passwordMatch = await bcrypt.compare(password, user.password_hash);
+
+    if (!passwordMatch) {
+      return res.status(401).json({
+        status: "error",
+        message: "Invalid email or password",
+      });
+    }
+
+    const permissionResult = await pool.query(
+      `
+      SELECT permissions.code
+      FROM role_permissions
+      JOIN permissions ON role_permissions.permission_id = permissions.id
+      WHERE role_permissions.role_id = $1
+      `,
+      [user.role_id]
+    );
+
+    const permissions = permissionResult.rows.map((row) => row.code);
+
+    const token = jwt.sign(
+      {
+        userId: user.id,
+        organisationId: user.organisation_id,
+        roleId: user.role_id,
+      },
+      process.env.JWT_SECRET,
+      {
+        expiresIn: "1d",
+      }
+    );
+
+    await pool.query(
+      "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1",
+      [user.id]
+    );
+
+    res.json({
+      status: "success",
+      message: "Login successful",
+      token,
+      user: {
+        id: user.id,
+        organisationId: user.organisation_id,
+        organisationName: user.organisation_name,
+        fullName: user.full_name,
+        email: user.email,
+        role: user.role_name,
+        permissions,
+      },
+    });
+  } catch (error) {
+    console.error("Login error:", error.message);
+
+    res.status(500).json({
+      status: "error",
+      message: "Login failed",
+      error: error.message,
+    });
+  }
+});
+
+
 
 const PORT = process.env.PORT || 5001;
 
