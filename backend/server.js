@@ -863,19 +863,7 @@ app.patch(
         if (!canAssignRole(req.user.role_name, selectedRole.name)) {
           return res.status(403).json({
             status: "error",
-            message: `You cannot assign ${selectedRole.name} role`,
-          });
-        }
-
-        const selectedRole = roleCheck.rows[0];
-
-        if (
-          selectedRole.name === "Admin" &&
-          !req.user.permissions.includes("roles.manage")
-        ) {
-          return res.status(403).json({
-            status: "error",
-            message: "Only admins can assign admin role",
+            message: `You cannot create a ${selectedRole.name} user`,
           });
         }
       }
