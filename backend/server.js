@@ -2425,32 +2425,26 @@ app.post(
 
       await client.query("BEGIN");
 
-      if (sku && sku.trim()) {
-        const skuCheck = await client.query(
-          `
-          SELECT id
-          FROM products
-          WHERE organisation_id = $1
-          AND LOWER(sku) = LOWER($2)
-          AND is_active = true
-          `,
-          [req.user.organisation_id, sku.trim()]
-        );
+      const cleanSku = sku?.trim() || null;
+      const quantityNumber = Number(stockQuantity || 0);
+      const finalBuyingPrice = Number(buyingPrice || 0);
+      const finalSellingPrice = Number(sellingPrice);
 
-        if (skuCheck.rows.length > 0) {
-          await client.query("ROLLBACK");
-          return res.status(409).json({
-            status: "error",
-            message: "SKU already exists. Please use a unique SKU.",
-          });
-        }
+      if (finalSellingPrice <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          status: "error",
+          message: "Selling price must be greater than 0",
+        });
       }
 
       if (supplierId) {
         const supplierCheck = await client.query(
           `
-          SELECT id FROM suppliers
-          WHERE id = $1 AND organisation_id = $2
+          SELECT id
+          FROM suppliers
+          WHERE id = $1
+          AND organisation_id = $2
           `,
           [supplierId, req.user.organisation_id]
         );
@@ -2467,8 +2461,10 @@ app.post(
       if (categoryId) {
         const categoryCheck = await client.query(
           `
-          SELECT id FROM categories
-          WHERE id = $1 AND organisation_id = $2
+          SELECT id
+          FROM categories
+          WHERE id = $1
+          AND organisation_id = $2
           `,
           [categoryId, req.user.organisation_id]
         );
@@ -2482,7 +2478,168 @@ app.post(
         }
       }
 
-      const quantityNumber = Number(stockQuantity || 0);
+      if (cleanSku) {
+        const existingProductResult = await client.query(
+          `
+          SELECT *
+          FROM products
+          WHERE organisation_id = $1
+          AND LOWER(TRIM(sku)) = LOWER(TRIM($2))
+          AND is_active = true
+          LIMIT 1
+          `,
+          [req.user.organisation_id, cleanSku]
+        );
+
+        if (existingProductResult.rows.length > 0) {
+          const existingProduct = existingProductResult.rows[0];
+
+          const existingSupplierId = existingProduct.supplier_id || null;
+          const newSupplierId = supplierId || null;
+
+          if (existingSupplierId !== newSupplierId) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({
+              status: "error",
+              message:
+                "This SKU already exists with a different supplier. Same SKU stock must use the same supplier.",
+            });
+          }
+
+          if (quantityNumber <= 0) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({
+              status: "error",
+              message:
+                "This SKU already exists. Enter stock quantity to add a new stock batch.",
+            });
+          }
+
+          const batchResult = await client.query(
+            `
+            INSERT INTO product_stock_batches (
+              organisation_id,
+              product_id,
+              supplier_id,
+              buying_price,
+              selling_price,
+              quantity,
+              original_quantity,
+              batch_note
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
+            RETURNING *
+            `,
+            [
+              req.user.organisation_id,
+              existingProduct.id,
+              newSupplierId,
+              finalBuyingPrice,
+              finalSellingPrice,
+              quantityNumber,
+              `New batch added for existing SKU ${cleanSku}`,
+            ]
+          );
+
+          await client.query(
+            `
+            UPDATE products
+            SET
+              category_id = COALESCE($1, category_id),
+              barcode = COALESCE($2, barcode),
+              description = COALESCE($3, description),
+              buying_price = $4,
+              selling_price = $5,
+              low_stock_alert = COALESCE($6, low_stock_alert),
+              image_url = COALESCE($7, image_url),
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = $8
+            AND organisation_id = $9
+            `,
+            [
+              categoryId || null,
+              barcode || null,
+              description || null,
+              finalBuyingPrice,
+              finalSellingPrice,
+              lowStockAlert !== undefined ? lowStockAlert : null,
+              imageUrl || null,
+              existingProduct.id,
+              req.user.organisation_id,
+            ]
+          );
+
+          const newStock = await syncProductStockFromBatches(
+            client,
+            existingProduct.id,
+            req.user.organisation_id
+          );
+
+          await client.query(
+            `
+            INSERT INTO stock_movements (
+              organisation_id,
+              product_id,
+              movement_type,
+              quantity,
+              reason,
+              created_by
+            )
+            VALUES ($1, $2, 'increase', $3, $4, $5)
+            `,
+            [
+              req.user.organisation_id,
+              existingProduct.id,
+              quantityNumber,
+              `New price batch added - Batch ${batchResult.rows[0].id}`,
+              req.user.id,
+            ]
+          );
+
+          await client.query(
+            `
+            INSERT INTO audit_logs (
+              organisation_id,
+              user_id,
+              action,
+              table_name,
+              record_id,
+              details
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            `,
+            [
+              req.user.organisation_id,
+              req.user.id,
+              "added stock batch to existing product",
+              "products",
+              existingProduct.id,
+              JSON.stringify({
+                productName: existingProduct.name,
+                sku: existingProduct.sku,
+                batchId: batchResult.rows[0].id,
+                buyingPrice: finalBuyingPrice,
+                sellingPrice: finalSellingPrice,
+                quantity: quantityNumber,
+                newStock,
+              }),
+            ]
+          );
+
+          await client.query("COMMIT");
+
+          return res.status(200).json({
+            status: "success",
+            message:
+              "SKU already exists. New stock batch added to the existing product.",
+            product: {
+              ...existingProduct,
+              stock_quantity: newStock,
+            },
+            batch: batchResult.rows[0],
+          });
+        }
+      }
 
       const productResult = await client.query(
         `
@@ -2508,11 +2665,11 @@ app.post(
           supplierId || null,
           categoryId || null,
           name,
-          sku?.trim() || null,
+          cleanSku,
           barcode || null,
           description || null,
-          Number(buyingPrice || 0),
-          Number(sellingPrice),
+          finalBuyingPrice,
+          finalSellingPrice,
           quantityNumber,
           lowStockAlert || 5,
           imageUrl || null,
@@ -2541,8 +2698,8 @@ app.post(
             req.user.organisation_id,
             product.id,
             supplierId || null,
-            Number(buyingPrice || 0),
-            Number(sellingPrice),
+            finalBuyingPrice,
+            finalSellingPrice,
             quantityNumber,
             "Initial product stock",
           ]

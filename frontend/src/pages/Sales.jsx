@@ -1172,10 +1172,12 @@ function Sales() {
                         value={item.productId}
                         onChange={(value) => handleProductChange(index, value)}
                         placeholder="Select product"
-                        searchPlaceholder="Search products..."
+                        searchPlaceholder="Search product by name or SKU..."
                         options={products.map((product) => ({
                           value: product.id,
-                          label: `${product.name} - Stock: ${product.stock_quantity}`,
+                          label: `${product.name} ${
+                            product.sku ? `(${product.sku})` : ""
+                          } - Total Stock: ${product.stock_quantity}`,
                         }))}
                       />
                     </div>
@@ -1185,21 +1187,13 @@ function Sales() {
                         label="Stock Batch"
                         value={item.stockBatchId}
                         onChange={(value) => handleBatchChange(index, value)}
-                        placeholder={
-                          item.productId
-                            ? "Select stock batch"
-                            : "Select product first"
-                        }
-                        searchPlaceholder="Search batches..."
+                        placeholder={item.productId ? "Select stock batch" : "Select product first"}
+                        searchPlaceholder="Search stock batch..."
                         options={batchOptions.map((batch) => ({
                           value: batch.id,
-                          label: `$${Number(batch.selling_price || 0).toFixed(
-                            2
-                          )} - ${batch.quantity} available${
-                            batch.supplier_name
-                              ? ` - ${batch.supplier_name}`
-                              : ""
-                          }`,
+                          label: `$${Number(batch.selling_price || 0).toFixed(2)} - ${
+                            batch.quantity
+                          } available${batch.supplier_name ? ` - ${batch.supplier_name}` : ""}`,
                         }))}
                       />
                     </div>
