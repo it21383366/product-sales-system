@@ -4998,6 +4998,659 @@ app.get(
 );
 
 // =========================
+// DETAILED REPORTS API
+// =========================
+
+// Sales detailed report
+app.get(
+  "/api/reports/sales-detail",
+  authMiddleware,
+  requirePermission("reports.sales.view"),
+  async (req, res) => {
+    try {
+      const { startDate, endDate, status, paymentMethod } = req.query;
+
+      let query = `
+        SELECT 
+          sales.id,
+          sales.sale_number,
+          sales.subtotal,
+          sales.discount_amount,
+          sales.tax_amount,
+          sales.total_amount,
+          sales.payment_method,
+          sales.cash_amount,
+          sales.card_amount,
+          sales.advance_amount,
+          sales.balance_amount,
+          sales.status,
+          sales.is_edited,
+          sales.created_at,
+          users.full_name AS sold_by
+        FROM sales
+        LEFT JOIN users ON sales.user_id = users.id
+        WHERE sales.organisation_id = $1
+      `;
+
+      const values = [req.user.organisation_id];
+      let count = 2;
+
+      if (startDate) {
+        query += ` AND DATE(sales.created_at) >= $${count}`;
+        values.push(startDate);
+        count++;
+      }
+
+      if (endDate) {
+        query += ` AND DATE(sales.created_at) <= $${count}`;
+        values.push(endDate);
+        count++;
+      }
+
+      if (status && status !== "all") {
+        query += ` AND sales.status = $${count}`;
+        values.push(status);
+        count++;
+      }
+
+      if (paymentMethod && paymentMethod !== "all") {
+        query += ` AND sales.payment_method = $${count}`;
+        values.push(paymentMethod);
+        count++;
+      }
+
+      query += ` ORDER BY sales.created_at DESC`;
+
+      const result = await pool.query(query, values);
+
+      const summary = result.rows.reduce(
+        (totals, sale) => {
+          totals.salesCount += 1;
+          totals.subtotal += Number(sale.subtotal || 0);
+          totals.discountTotal += Number(sale.discount_amount || 0);
+          totals.taxTotal += Number(sale.tax_amount || 0);
+          totals.totalAmount += Number(sale.total_amount || 0);
+          totals.cashTotal += Number(sale.cash_amount || 0);
+          totals.cardTotal += Number(sale.card_amount || 0);
+          totals.advanceTotal += Number(sale.advance_amount || 0);
+          totals.balanceTotal += Number(sale.balance_amount || 0);
+
+          if (sale.status === "completed") totals.completedCount += 1;
+          if (sale.status === "pending") totals.pendingCount += 1;
+          if (sale.status === "cancelled") totals.cancelledCount += 1;
+          if (sale.status === "returned") totals.returnedCount += 1;
+          if (sale.status === "partially_returned") {
+            totals.partiallyReturnedCount += 1;
+          }
+
+          return totals;
+        },
+        {
+          salesCount: 0,
+          completedCount: 0,
+          pendingCount: 0,
+          cancelledCount: 0,
+          returnedCount: 0,
+          partiallyReturnedCount: 0,
+          subtotal: 0,
+          discountTotal: 0,
+          taxTotal: 0,
+          totalAmount: 0,
+          cashTotal: 0,
+          cardTotal: 0,
+          advanceTotal: 0,
+          balanceTotal: 0,
+        }
+      );
+
+      res.json({
+        status: "success",
+        summary,
+        sales: result.rows,
+      });
+    } catch (error) {
+      console.error("Sales detail report error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to generate sales report",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Product detailed report
+app.get(
+  "/api/reports/products-detail",
+  authMiddleware,
+  requirePermission("reports.products.view"),
+  async (req, res) => {
+    try {
+      const { search, categoryId, supplierId, lowStock } = req.query;
+
+      let query = `
+        SELECT 
+          products.id,
+          products.name,
+          products.sku,
+          products.barcode,
+          products.buying_price,
+          products.selling_price,
+          products.stock_quantity,
+          products.low_stock_alert,
+          products.is_active,
+          products.created_at,
+          categories.name AS category_name,
+          suppliers.name AS supplier_name,
+          COALESCE(SUM(
+            CASE 
+              WHEN sales.status = 'completed' THEN sale_items.quantity 
+              ELSE 0 
+            END
+          ), 0) AS quantity_sold,
+          COALESCE(SUM(
+            CASE 
+              WHEN sales.status = 'completed' THEN sale_items.total_price 
+              ELSE 0 
+            END
+          ), 0) AS sales_value
+        FROM products
+        LEFT JOIN categories ON products.category_id = categories.id
+        LEFT JOIN suppliers ON products.supplier_id = suppliers.id
+        LEFT JOIN sale_items ON products.id = sale_items.product_id
+        LEFT JOIN sales ON sale_items.sale_id = sales.id
+        WHERE products.organisation_id = $1
+      `;
+
+      const values = [req.user.organisation_id];
+      let count = 2;
+
+      if (search) {
+        query += `
+          AND (
+            products.name ILIKE $${count}
+            OR products.sku ILIKE $${count}
+            OR products.barcode ILIKE $${count}
+          )
+        `;
+        values.push(`%${search}%`);
+        count++;
+      }
+
+      if (categoryId) {
+        query += ` AND products.category_id = $${count}`;
+        values.push(categoryId);
+        count++;
+      }
+
+      if (supplierId) {
+        query += ` AND products.supplier_id = $${count}`;
+        values.push(supplierId);
+        count++;
+      }
+
+      if (lowStock === "true") {
+        query += ` AND products.stock_quantity <= products.low_stock_alert`;
+      }
+
+      query += `
+        GROUP BY
+          products.id,
+          products.name,
+          products.sku,
+          products.barcode,
+          products.buying_price,
+          products.selling_price,
+          products.stock_quantity,
+          products.low_stock_alert,
+          products.is_active,
+          products.created_at,
+          categories.name,
+          suppliers.name
+        ORDER BY products.name ASC
+      `;
+
+      const result = await pool.query(query, values);
+
+      const summary = result.rows.reduce(
+        (totals, product) => {
+          totals.productCount += 1;
+          totals.totalStock += Number(product.stock_quantity || 0);
+          totals.lowStockCount +=
+            Number(product.stock_quantity || 0) <=
+            Number(product.low_stock_alert || 0)
+              ? 1
+              : 0;
+          totals.quantitySold += Number(product.quantity_sold || 0);
+          totals.salesValue += Number(product.sales_value || 0);
+          return totals;
+        },
+        {
+          productCount: 0,
+          totalStock: 0,
+          lowStockCount: 0,
+          quantitySold: 0,
+          salesValue: 0,
+        }
+      );
+
+      res.json({
+        status: "success",
+        summary,
+        products: result.rows,
+      });
+    } catch (error) {
+      console.error("Product detail report error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to generate product report",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Stock movement report
+app.get(
+  "/api/reports/stock-movements",
+  authMiddleware,
+  requirePermission("reports.stock.view"),
+  async (req, res) => {
+    try {
+      const { startDate, endDate, movementType, search } = req.query;
+
+      let query = `
+        SELECT
+          stock_movements.id,
+          stock_movements.movement_type,
+          stock_movements.quantity,
+          stock_movements.reason,
+          stock_movements.created_at,
+          products.name AS product_name,
+          products.sku,
+          users.full_name AS created_by_name
+        FROM stock_movements
+        LEFT JOIN products ON stock_movements.product_id = products.id
+        LEFT JOIN users ON stock_movements.created_by = users.id
+        WHERE stock_movements.organisation_id = $1
+      `;
+
+      const values = [req.user.organisation_id];
+      let count = 2;
+
+      if (startDate) {
+        query += ` AND DATE(stock_movements.created_at) >= $${count}`;
+        values.push(startDate);
+        count++;
+      }
+
+      if (endDate) {
+        query += ` AND DATE(stock_movements.created_at) <= $${count}`;
+        values.push(endDate);
+        count++;
+      }
+
+      if (movementType && movementType !== "all") {
+        query += ` AND stock_movements.movement_type = $${count}`;
+        values.push(movementType);
+        count++;
+      }
+
+      if (search) {
+        query += `
+          AND (
+            products.name ILIKE $${count}
+            OR products.sku ILIKE $${count}
+            OR stock_movements.reason ILIKE $${count}
+          )
+        `;
+        values.push(`%${search}%`);
+        count++;
+      }
+
+      query += ` ORDER BY stock_movements.created_at DESC`;
+
+      const result = await pool.query(query, values);
+
+      const summary = result.rows.reduce(
+        (totals, movement) => {
+          totals.movementCount += 1;
+
+          const qty = Number(movement.quantity || 0);
+
+          if (qty > 0) totals.totalStockIn += qty;
+          if (qty < 0) totals.totalStockOut += Math.abs(qty);
+
+          return totals;
+        },
+        {
+          movementCount: 0,
+          totalStockIn: 0,
+          totalStockOut: 0,
+        }
+      );
+
+      res.json({
+        status: "success",
+        summary,
+        movements: result.rows,
+      });
+    } catch (error) {
+      console.error("Stock movement report error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to generate stock movement report",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Supplier detailed report
+app.get(
+  "/api/reports/suppliers-detail",
+  authMiddleware,
+  requirePermission("reports.suppliers.view"),
+  async (req, res) => {
+    try {
+      const { supplierId, lowStockOnly } = req.query;
+
+      let query = `
+        SELECT
+          suppliers.id,
+          suppliers.name,
+          suppliers.contact_person,
+          suppliers.phone,
+          suppliers.email,
+          suppliers.address,
+          COUNT(products.id) AS product_count,
+          COALESCE(SUM(products.stock_quantity), 0) AS total_stock,
+          COALESCE(SUM(
+            CASE
+              WHEN products.stock_quantity <= products.low_stock_alert THEN 1
+              ELSE 0
+            END
+          ), 0) AS low_stock_products
+        FROM suppliers
+        LEFT JOIN products 
+          ON suppliers.id = products.supplier_id 
+          AND products.is_active = true
+        WHERE suppliers.organisation_id = $1
+        AND suppliers.is_active = true
+      `;
+
+      const values = [req.user.organisation_id];
+      let count = 2;
+
+      if (supplierId) {
+        query += ` AND suppliers.id = $${count}`;
+        values.push(supplierId);
+        count++;
+      }
+
+      query += `
+        GROUP BY
+          suppliers.id,
+          suppliers.name,
+          suppliers.contact_person,
+          suppliers.phone,
+          suppliers.email,
+          suppliers.address
+      `;
+
+      if (lowStockOnly === "true") {
+        query += `
+          HAVING COALESCE(SUM(
+            CASE
+              WHEN products.stock_quantity <= products.low_stock_alert THEN 1
+              ELSE 0
+            END
+          ), 0) > 0
+        `;
+      }
+
+      query += ` ORDER BY suppliers.name ASC`;
+
+      const result = await pool.query(query, values);
+
+      const summary = result.rows.reduce(
+        (totals, supplier) => {
+          totals.supplierCount += 1;
+          totals.productCount += Number(supplier.product_count || 0);
+          totals.totalStock += Number(supplier.total_stock || 0);
+          totals.lowStockProducts += Number(supplier.low_stock_products || 0);
+          return totals;
+        },
+        {
+          supplierCount: 0,
+          productCount: 0,
+          totalStock: 0,
+          lowStockProducts: 0,
+        }
+      );
+
+      res.json({
+        status: "success",
+        summary,
+        suppliers: result.rows,
+      });
+    } catch (error) {
+      console.error("Supplier detail report error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to generate supplier report",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// User activity report
+app.get(
+  "/api/reports/user-activity",
+  authMiddleware,
+  requirePermission("reports.users.view"),
+  async (req, res) => {
+    try {
+      const { startDate, endDate, search, tableName } = req.query;
+
+      let query = `
+        SELECT
+          audit_logs.id,
+          audit_logs.action,
+          audit_logs.table_name,
+          audit_logs.record_id,
+          audit_logs.details,
+          audit_logs.created_at,
+          users.full_name,
+          users.email,
+          roles.name AS role_name
+        FROM audit_logs
+        LEFT JOIN users ON audit_logs.user_id = users.id
+        LEFT JOIN roles ON users.role_id = roles.id
+        WHERE audit_logs.organisation_id = $1
+      `;
+
+      const values = [req.user.organisation_id];
+      let count = 2;
+
+      if (startDate) {
+        query += ` AND DATE(audit_logs.created_at) >= $${count}`;
+        values.push(startDate);
+        count++;
+      }
+
+      if (endDate) {
+        query += ` AND DATE(audit_logs.created_at) <= $${count}`;
+        values.push(endDate);
+        count++;
+      }
+
+      if (tableName && tableName !== "all") {
+        query += ` AND audit_logs.table_name = $${count}`;
+        values.push(tableName);
+        count++;
+      }
+
+      if (search) {
+        query += `
+          AND (
+            users.full_name ILIKE $${count}
+            OR users.email ILIKE $${count}
+            OR audit_logs.action ILIKE $${count}
+            OR audit_logs.table_name ILIKE $${count}
+          )
+        `;
+        values.push(`%${search}%`);
+        count++;
+      }
+
+      query += ` ORDER BY audit_logs.created_at DESC`;
+
+      const result = await pool.query(query, values);
+
+      const summary = {
+        activityCount: result.rows.length,
+      };
+
+      res.json({
+        status: "success",
+        summary,
+        activities: result.rows,
+      });
+    } catch (error) {
+      console.error("User activity report error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to generate user activity report",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Profit report
+app.get(
+  "/api/reports/profit",
+  authMiddleware,
+  requirePermission("reports.profit.view"),
+  async (req, res) => {
+    try {
+      const { startDate, endDate, search, categoryId, supplierId } = req.query;
+
+      let query = `
+        SELECT
+          products.id,
+          products.name AS product_name,
+          products.sku,
+          categories.name AS category_name,
+          suppliers.name AS supplier_name,
+          products.buying_price,
+          products.selling_price,
+          COALESCE(SUM(sale_items.quantity), 0) AS quantity_sold,
+          COALESCE(SUM(sale_items.total_price), 0) AS sales_value,
+          COALESCE(SUM(sale_items.quantity * products.buying_price), 0) AS buying_cost,
+          COALESCE(SUM(sale_items.total_price - (sale_items.quantity * products.buying_price)), 0) AS gross_profit
+        FROM products
+        LEFT JOIN categories ON products.category_id = categories.id
+        LEFT JOIN suppliers ON products.supplier_id = suppliers.id
+        LEFT JOIN sale_items ON products.id = sale_items.product_id
+        LEFT JOIN sales ON sale_items.sale_id = sales.id
+        WHERE products.organisation_id = $1
+        AND sales.status = 'completed'
+      `;
+
+      const values = [req.user.organisation_id];
+      let count = 2;
+
+      if (startDate) {
+        query += ` AND DATE(sales.created_at) >= $${count}`;
+        values.push(startDate);
+        count++;
+      }
+
+      if (endDate) {
+        query += ` AND DATE(sales.created_at) <= $${count}`;
+        values.push(endDate);
+        count++;
+      }
+
+      if (search) {
+        query += `
+          AND (
+            products.name ILIKE $${count}
+            OR products.sku ILIKE $${count}
+          )
+        `;
+        values.push(`%${search}%`);
+        count++;
+      }
+
+      if (categoryId) {
+        query += ` AND products.category_id = $${count}`;
+        values.push(categoryId);
+        count++;
+      }
+
+      if (supplierId) {
+        query += ` AND products.supplier_id = $${count}`;
+        values.push(supplierId);
+        count++;
+      }
+
+      query += `
+        GROUP BY
+          products.id,
+          products.name,
+          products.sku,
+          categories.name,
+          suppliers.name,
+          products.buying_price,
+          products.selling_price
+        ORDER BY gross_profit DESC
+      `;
+
+      const result = await pool.query(query, values);
+
+      const summary = result.rows.reduce(
+        (totals, product) => {
+          totals.quantitySold += Number(product.quantity_sold || 0);
+          totals.salesValue += Number(product.sales_value || 0);
+          totals.buyingCost += Number(product.buying_cost || 0);
+          totals.grossProfit += Number(product.gross_profit || 0);
+          return totals;
+        },
+        {
+          quantitySold: 0,
+          salesValue: 0,
+          buyingCost: 0,
+          grossProfit: 0,
+        }
+      );
+
+      res.json({
+        status: "success",
+        summary,
+        profits: result.rows,
+      });
+    } catch (error) {
+      console.error("Profit report error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to generate profit report",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// =========================
 // ORGANISATION SETTINGS API
 // =========================
 
