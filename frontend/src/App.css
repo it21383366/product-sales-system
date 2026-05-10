@@ -2075,42 +2075,43 @@ th {
 
 .report-summary-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(230px, max-content));
+  gap: 14px;
   width: 100%;
-  min-width: 0;
+  align-items: stretch;
+  justify-content: start;
 }
 
 .report-summary-card {
-  min-width: 0;
+  min-width: 230px;
+  width: max-content;
+  max-width: 100%;
   min-height: 84px;
-  padding: 15px;
+  padding: 15px 18px;
   border-radius: 15px;
   border: 1px solid var(--border-light);
   background: #172033;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .report-summary-card span {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  display: block;
+  max-width: 260px;
   color: var(--muted);
   font-size: 12px;
   font-weight: 900;
-  line-height: 1.25;
+  line-height: 1.35;
   margin-bottom: 8px;
+  white-space: normal;
 }
 
 .report-summary-card strong {
   display: block;
   color: var(--text);
-  font-size: clamp(18px, 1.5vw, 25px);
+  font-size: 24px;
   font-weight: 900;
-  line-height: 1.1;
-  overflow-wrap: anywhere;
+  line-height: 1.15;
+  white-space: nowrap;
 }
 
 .report-table-wrapper {
@@ -3011,10 +3012,24 @@ button {
   .stock-preview-box,
   .damage-stock-box,
   .supplier-batch-summary,
-  .report-summary-grid,
   .reports-sidebar {
     grid-template-columns: 1fr;
   }
+
+  @media (max-width: 600px) {
+  .report-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .report-summary-card {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .report-summary-card strong {
+    white-space: normal;
+  }
+}
 
   .dashboard-kpi-card strong,
   .report-summary-card strong {

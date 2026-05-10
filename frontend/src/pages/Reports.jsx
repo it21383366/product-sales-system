@@ -1057,7 +1057,7 @@ function Reports() {
     }
 
     return (
-      <div className="report-summary-grid">
+      <div className="report-summary-card">
         {items.map(([label, value]) => (
           <div className="report-summary-card" key={label}>
             <span>{label}</span>
