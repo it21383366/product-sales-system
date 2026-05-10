@@ -70,10 +70,32 @@ function App() {
     verifySession();
   }, []);
 
+  const applyBrowserBranding = (settingsData) => {
+    if (!settingsData) return;
+
+    document.title = settingsData.name || "Product Sales System";
+
+    const baseURL = api.defaults.baseURL || "";
+    const iconUrl = settingsData.icon_url
+      ? `${baseURL}${settingsData.icon_url}`
+      : "/icons.svg";
+
+    let favicon = document.querySelector("link[rel='icon']");
+
+    if (!favicon) {
+      favicon = document.createElement("link");
+      favicon.rel = "icon";
+      document.head.appendChild(favicon);
+    }
+
+    favicon.href = iconUrl;
+  };
+
   const fetchSettings = async () => {
     try {
       const response = await api.get("/api/settings");
       setSettings(response.data.settings);
+      applyBrowserBranding(response.data.settings);
     } catch (error) {
       console.error("Failed to load settings", error);
     }
@@ -311,6 +333,7 @@ function App() {
             <Settings
               onSettingsUpdated={(updatedSettings) => {
                 setSettings(updatedSettings);
+                applyBrowserBranding(updatedSettings);
               }}
             />
           )}

@@ -14,6 +14,8 @@ function Settings({ onSettingsUpdated }) {
     email: "",
     phone: "",
     address: "",
+    logoUrl: "",
+    iconUrl: "",
     currency: "AUD",
     invoicePrefix: "INV",
   });
@@ -25,6 +27,27 @@ function Settings({ onSettingsUpdated }) {
     return permissions.includes(permission);
   };
 
+  const applyBrowserBranding = (settingsData) => {
+    if (!settingsData) return;
+
+    document.title = settingsData.name || "Product Sales System";
+
+    const baseURL = api.defaults.baseURL || "";
+    const iconUrl = settingsData.icon_url
+      ? `${baseURL}${settingsData.icon_url}`
+      : "/icons.svg";
+
+    let favicon = document.querySelector("link[rel='icon']");
+
+    if (!favicon) {
+      favicon = document.createElement("link");
+      favicon.rel = "icon";
+      document.head.appendChild(favicon);
+    }
+
+    favicon.href = iconUrl;
+  };
+
   const fetchSettings = async () => {
     try {
       setError("");
@@ -33,12 +56,15 @@ function Settings({ onSettingsUpdated }) {
       const data = response.data.settings;
 
       setSettings(data);
+      applyBrowserBranding(data);
 
       setForm({
         name: data.name || "",
         email: data.email || "",
         phone: data.phone || "",
         address: data.address || "",
+        logoUrl: data.logo_url || "",
+        iconUrl: data.icon_url || "",
         currency: data.currency || "AUD",
         invoicePrefix: data.invoice_prefix || "INV",
       });
@@ -56,6 +82,48 @@ function Settings({ onSettingsUpdated }) {
       ...form,
       [e.target.name]: e.target.value,
     });
+  };
+
+  const handleIconUpload = async (e) => {
+    try {
+      setError("");
+      setMessage("");
+
+      const file = e.target.files[0];
+
+      if (!file) {
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("icon", file);
+
+      const response = await api.post("/api/settings/upload-icon", formData, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+      });
+
+      const iconUrl = response.data.iconUrl;
+      const updatedSettings = response.data.settings;
+
+      setForm((current) => ({
+        ...current,
+        iconUrl,
+      }));
+
+      setSettings(updatedSettings);
+
+      if (onSettingsUpdated) {
+        onSettingsUpdated(updatedSettings);
+      }
+
+      applyBrowserBranding(updatedSettings);
+
+      setMessage("Browser tab icon uploaded successfully");
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to upload icon");
+    }
   };
 
   const handleReview = (e) => {
@@ -82,43 +150,52 @@ function Settings({ onSettingsUpdated }) {
 
   const handleSaveSettings = async () => {
     try {
-        setModalError("");
-        setError("");
-        setMessage("");
+      setModalError("");
+      setError("");
+      setMessage("");
 
-        const response = await api.patch("/api/settings", {
+      const response = await api.patch("/api/settings", {
         name: form.name,
         email: form.email,
         phone: form.phone,
         address: form.address,
+        logoUrl: form.logoUrl,
+        iconUrl: form.iconUrl,
         currency: form.currency,
         invoicePrefix: form.invoicePrefix,
-        });
+      });
 
-        const updatedSettings = response.data.settings;
+      const updatedSettings = response.data.settings;
 
-        setSettings(updatedSettings);
+      setSettings(updatedSettings);
+      applyBrowserBranding(updatedSettings);
 
-        setForm({
+      setForm({
         name: updatedSettings.name || "",
         email: updatedSettings.email || "",
         phone: updatedSettings.phone || "",
         address: updatedSettings.address || "",
+        logoUrl: updatedSettings.logo_url || "",
+        iconUrl: updatedSettings.icon_url || "",
         currency: updatedSettings.currency || "AUD",
         invoicePrefix: updatedSettings.invoice_prefix || "INV",
-        });
+      });
 
-        if (onSettingsUpdated) {
+      if (onSettingsUpdated) {
         onSettingsUpdated(updatedSettings);
-        }
+      }
 
-        setMessage("Settings updated successfully");
-        setShowReviewModal(false);
+      setMessage("Settings updated successfully");
+      setShowReviewModal(false);
     } catch (err) {
-        setShowReviewModal(false);
-        setModalError(err.response?.data?.message || "Failed to update settings");
+      setShowReviewModal(false);
+      setModalError(err.response?.data?.message || "Failed to update settings");
     }
-    };
+  };
+
+  const iconPreviewUrl = form.iconUrl
+    ? `${api.defaults.baseURL || ""}${form.iconUrl}`
+    : "";
 
   if (!hasPermission("settings.manage")) {
     return (
@@ -149,7 +226,7 @@ function Settings({ onSettingsUpdated }) {
         <section className="panel settings-form-panel">
           <div className="settings-section-title">
             <h3>Store Information</h3>
-            <p>This information appears on the header, footer, and receipts.</p>
+            <p>This information appears on the header, footer, receipts, and browser tab.</p>
           </div>
 
           {modalError && <div className="modal-error">{modalError}</div>}
@@ -163,6 +240,23 @@ function Settings({ onSettingsUpdated }) {
               onChange={handleChange}
               required
             />
+
+            <label>Browser Tab Icon</label>
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/jpg,image/webp,image/svg+xml,image/x-icon"
+              onChange={handleIconUpload}
+            />
+
+            {form.iconUrl && (
+              <div className="settings-icon-preview">
+                <img src={iconPreviewUrl} alt="Store browser tab icon" />
+                <div>
+                  <strong>Current browser tab icon</strong>
+                  <span>{form.iconUrl}</span>
+                </div>
+              </div>
+            )}
 
             <label>Email</label>
             <input
@@ -233,6 +327,18 @@ function Settings({ onSettingsUpdated }) {
           </div>
 
           <div className="settings-preview-card">
+            <span>Browser Tab Icon</span>
+            {form.iconUrl ? (
+              <div className="settings-mini-icon-row">
+                <img src={iconPreviewUrl} alt="Browser icon preview" />
+                <strong>Added</strong>
+              </div>
+            ) : (
+              <strong>Not added</strong>
+            )}
+          </div>
+
+          <div className="settings-preview-card">
             <span>Address</span>
             <strong>{form.address || "Not added"}</strong>
           </div>
@@ -275,6 +381,11 @@ function Settings({ onSettingsUpdated }) {
               <div>
                 <span>Store Name</span>
                 <strong>{form.name || "-"}</strong>
+              </div>
+
+              <div>
+                <span>Browser Tab Icon</span>
+                <strong>{form.iconUrl ? "Added" : "Not added"}</strong>
               </div>
 
               <div>
