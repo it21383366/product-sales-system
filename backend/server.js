@@ -216,6 +216,27 @@ app.get("/api/setup-database", async (req, res) => {
 
       ALTER TABLE sales
       ADD COLUMN IF NOT EXISTS edit_reason TEXT;
+
+      ALTER TABLE sales
+      ADD COLUMN IF NOT EXISTS advance_amount NUMERIC(12,2) DEFAULT 0;
+
+      ALTER TABLE sales
+      ADD COLUMN IF NOT EXISTS balance_amount NUMERIC(12,2) DEFAULT 0;
+
+      ALTER TABLE sales
+      ADD COLUMN IF NOT EXISTS advance_payment_method VARCHAR(50);
+
+      ALTER TABLE sales
+      ADD COLUMN IF NOT EXISTS final_payment_method VARCHAR(50);
+
+      ALTER TABLE sales
+      ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
+
+      ALTER TABLE sales
+      ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP;
+
+      ALTER TABLE sales
+      ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP;
     `);
 
     const permissions = [
@@ -245,6 +266,16 @@ app.get("/api/setup-database", async (req, res) => {
       ["sales.view", "View Sales"],
       ["sales.create", "Create Sales"],
       ["sales.refund", "Refund Sales"],
+      ["sales.pending.create", "Create Pending Sales"],
+      ["sales.pending.complete", "Complete Pending Sales"],
+      ["sales.pending.cancel", "Cancel Pending Sales"],
+
+      ["reports.sales.view", "View Sales Reports"],
+      ["reports.products.view", "View Product Reports"],
+      ["reports.stock.view", "View Stock Reports"],
+      ["reports.suppliers.view", "View Supplier Reports"],
+      ["reports.users.view", "View User Activity Reports"],
+      ["reports.profit.view", "View Profit Reports"],
 
       ["reports.view", "View Reports"],
     ];
@@ -1078,6 +1109,16 @@ app.post(
             "sales.view",
             "sales.create",
             "sales.refund",
+            "sales.pending.create",
+            "sales.pending.complete",
+            "sales.pending.cancel",
+
+            "reports.sales.view",
+            "reports.products.view",
+            "reports.stock.view",
+            "reports.suppliers.view",
+            "reports.users.view",
+            "reports.profit.view",
 
             "reports.view",
           ],
@@ -1106,6 +1147,15 @@ app.post(
             "sales.view",
             "sales.create",
             "sales.refund",
+            "sales.pending.create",
+            "sales.pending.complete",
+            "sales.pending.cancel",
+
+            "reports.sales.view",
+            "reports.products.view",
+            "reports.stock.view",
+            "reports.suppliers.view",
+            "reports.profit.view",
 
             "reports.view",
           ],
@@ -1118,6 +1168,8 @@ app.post(
             "products.view",
             "sales.view",
             "sales.create",
+            "sales.pending.create",
+            "sales.pending.complete",
           ],
         },
         {
@@ -1136,6 +1188,10 @@ app.post(
             "suppliers.view",
             "suppliers.create",
             "suppliers.edit",
+
+            "reports.products.view",
+            "reports.stock.view",
+            "reports.suppliers.view",
           ],
         },
       ];
@@ -2642,11 +2698,10 @@ app.delete(
 // SALES / POS API
 // =========================
 
-// Create sale
+// Create sale or pending sale
 app.post(
   "/api/sales",
   authMiddleware,
-  requirePermission("sales.create"),
   async (req, res) => {
     const client = await pool.connect();
 
@@ -2659,7 +2714,29 @@ app.post(
         paymentMethod,
         cashAmount,
         cardAmount,
+        saleStatus,
+        advanceAmount,
       } = req.body;
+
+      const finalSaleStatus = saleStatus === "pending" ? "pending" : "completed";
+
+      if (finalSaleStatus === "pending") {
+        if (!req.user.permissions.includes("sales.pending.create")) {
+          return res.status(403).json({
+            status: "error",
+            message: "You do not have permission to create pending sales",
+            requiredPermission: "sales.pending.create",
+          });
+        }
+      } else {
+        if (!req.user.permissions.includes("sales.create")) {
+          return res.status(403).json({
+            status: "error",
+            message: "You do not have permission to create sales",
+            requiredPermission: "sales.create",
+          });
+        }
+      }
 
       if (!items || !Array.isArray(items) || items.length === 0) {
         return res.status(400).json({
@@ -2683,7 +2760,7 @@ app.post(
       for (const item of items) {
         const { productId, quantity } = item;
 
-        if (!productId || !quantity || quantity <= 0) {
+        if (!productId || !quantity || Number(quantity) <= 0) {
           await client.query("ROLLBACK");
           return res.status(400).json({
             status: "error",
@@ -2749,22 +2826,89 @@ app.post(
       const finalTaxAmount = Number(taxAmount || 0);
       const totalAmount = subtotal - finalDiscount + finalTaxAmount;
 
-      const finalCashAmount =
-        paymentMethod === "cash" ? totalAmount : Number(cashAmount || 0);
+      if (totalAmount <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          status: "error",
+          message: "Sale total must be greater than 0",
+        });
+      }
 
-      const finalCardAmount =
-        paymentMethod === "card" ? totalAmount : Number(cardAmount || 0);
+      let finalCashAmount = 0;
+      let finalCardAmount = 0;
+      let finalAdvanceAmount = 0;
+      let finalBalanceAmount = 0;
+      let advancePaymentMethod = null;
+      let finalPaymentMethod = null;
 
-      if (paymentMethod === "split") {
-        const paidTotal = finalCashAmount + finalCardAmount;
+      if (finalSaleStatus === "pending") {
+        finalAdvanceAmount = Number(advanceAmount || 0);
 
-        if (Number(paidTotal.toFixed(2)) !== Number(totalAmount.toFixed(2))) {
+        if (finalAdvanceAmount <= 0) {
           await client.query("ROLLBACK");
           return res.status(400).json({
             status: "error",
-            message: "Cash amount + card amount must match the total amount",
+            message: "Advance amount must be greater than 0 for pending sales",
           });
         }
+
+        if (finalAdvanceAmount >= totalAmount) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message:
+              "Advance amount must be less than total amount. Use completed sale if fully paid.",
+          });
+        }
+
+        if (paymentMethod === "cash") {
+          finalCashAmount = finalAdvanceAmount;
+          finalCardAmount = 0;
+        } else if (paymentMethod === "card") {
+          finalCashAmount = 0;
+          finalCardAmount = finalAdvanceAmount;
+        } else {
+          finalCashAmount = Number(cashAmount || 0);
+          finalCardAmount = Number(cardAmount || 0);
+
+          const paidTotal = finalCashAmount + finalCardAmount;
+
+          if (Number(paidTotal.toFixed(2)) !== Number(finalAdvanceAmount.toFixed(2))) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({
+              status: "error",
+              message: "Cash amount + card amount must match the advance amount",
+            });
+          }
+        }
+
+        finalBalanceAmount = totalAmount - finalAdvanceAmount;
+        advancePaymentMethod = paymentMethod;
+      } else {
+        if (paymentMethod === "cash") {
+          finalCashAmount = totalAmount;
+          finalCardAmount = 0;
+        } else if (paymentMethod === "card") {
+          finalCashAmount = 0;
+          finalCardAmount = totalAmount;
+        } else {
+          finalCashAmount = Number(cashAmount || 0);
+          finalCardAmount = Number(cardAmount || 0);
+
+          const paidTotal = finalCashAmount + finalCardAmount;
+
+          if (Number(paidTotal.toFixed(2)) !== Number(totalAmount.toFixed(2))) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({
+              status: "error",
+              message: "Cash amount + card amount must match the total amount",
+            });
+          }
+        }
+
+        finalAdvanceAmount = 0;
+        finalBalanceAmount = 0;
+        finalPaymentMethod = paymentMethod;
       }
 
       const saleCountResult = await client.query(
@@ -2794,9 +2938,14 @@ app.post(
           payment_method,
           cash_amount,
           card_amount,
-          status
+          advance_amount,
+          balance_amount,
+          advance_payment_method,
+          final_payment_method,
+          status,
+          completed_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'completed')
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
         RETURNING *
         `,
         [
@@ -2811,6 +2960,12 @@ app.post(
           paymentMethod,
           finalCashAmount,
           finalCardAmount,
+          finalAdvanceAmount,
+          finalBalanceAmount,
+          advancePaymentMethod,
+          finalPaymentMethod,
+          finalSaleStatus,
+          finalSaleStatus === "completed" ? new Date() : null,
         ]
       );
 
@@ -2859,13 +3014,16 @@ app.post(
             reason,
             created_by
           )
-          VALUES ($1, $2, 'sale', $3, $4, $5)
+          VALUES ($1, $2, $3, $4, $5, $6)
           `,
           [
             req.user.organisation_id,
             item.productId,
+            finalSaleStatus === "pending" ? "pending_sale" : "sale",
             -item.quantity,
-            `Sale ${saleNumber}`,
+            finalSaleStatus === "pending"
+              ? `Pending sale ${saleNumber}`
+              : `Sale ${saleNumber}`,
             req.user.id,
           ]
         );
@@ -2886,13 +3044,16 @@ app.post(
         [
           req.user.organisation_id,
           req.user.id,
-          "created sale",
+          finalSaleStatus === "pending" ? "created pending sale" : "created sale",
           "sales",
           sale.id,
           JSON.stringify({
             saleNumber,
+            status: finalSaleStatus,
             paymentMethod,
             totalAmount,
+            advanceAmount: finalAdvanceAmount,
+            balanceAmount: finalBalanceAmount,
             cashAmount: finalCashAmount,
             cardAmount: finalCardAmount,
           }),
@@ -2903,7 +3064,10 @@ app.post(
 
       res.status(201).json({
         status: "success",
-        message: "Sale completed successfully",
+        message:
+          finalSaleStatus === "pending"
+            ? "Pending sale created successfully"
+            : "Sale completed successfully",
         sale: {
           ...sale,
           items: saleItems,
@@ -2917,6 +3081,316 @@ app.post(
       res.status(500).json({
         status: "error",
         message: "Failed to create sale",
+        error: error.message,
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// Complete pending sale
+app.patch(
+  "/api/sales/:id/complete-pending",
+  authMiddleware,
+  requirePermission("sales.pending.complete"),
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const { id } = req.params;
+      const { paymentMethod, cashAmount, cardAmount } = req.body;
+
+      if (!["cash", "card", "split"].includes(paymentMethod)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Payment method must be cash, card, or split",
+        });
+      }
+
+      await client.query("BEGIN");
+
+      const saleResult = await client.query(
+        `
+        SELECT *
+        FROM sales
+        WHERE id = $1
+        AND organisation_id = $2
+        AND status = 'pending'
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (saleResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({
+          status: "error",
+          message: "Pending sale not found",
+        });
+      }
+
+      const sale = saleResult.rows[0];
+      const balanceAmount = Number(sale.balance_amount || 0);
+
+      let finalCashPaid = 0;
+      let finalCardPaid = 0;
+
+      if (paymentMethod === "cash") {
+        finalCashPaid = balanceAmount;
+        finalCardPaid = 0;
+      } else if (paymentMethod === "card") {
+        finalCashPaid = 0;
+        finalCardPaid = balanceAmount;
+      } else {
+        finalCashPaid = Number(cashAmount || 0);
+        finalCardPaid = Number(cardAmount || 0);
+
+        const paidTotal = finalCashPaid + finalCardPaid;
+
+        if (Number(paidTotal.toFixed(2)) !== Number(balanceAmount.toFixed(2))) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message: "Cash amount + card amount must match the balance amount",
+          });
+        }
+      }
+
+      const newCashTotal = Number(sale.cash_amount || 0) + finalCashPaid;
+      const newCardTotal = Number(sale.card_amount || 0) + finalCardPaid;
+
+      let combinedPaymentMethod = "split";
+
+      if (newCashTotal > 0 && newCardTotal === 0) {
+        combinedPaymentMethod = "cash";
+      }
+
+      if (newCardTotal > 0 && newCashTotal === 0) {
+        combinedPaymentMethod = "card";
+      }
+
+      const updatedSaleResult = await client.query(
+        `
+        UPDATE sales
+        SET
+          status = 'completed',
+          payment_method = $1,
+          cash_amount = $2,
+          card_amount = $3,
+          balance_amount = 0,
+          final_payment_method = $4,
+          completed_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $5
+        AND organisation_id = $6
+        RETURNING *
+        `,
+        [
+          combinedPaymentMethod,
+          newCashTotal,
+          newCardTotal,
+          paymentMethod,
+          id,
+          req.user.organisation_id,
+        ]
+      );
+
+      await client.query(
+        `
+        INSERT INTO audit_logs (
+          organisation_id,
+          user_id,
+          action,
+          table_name,
+          record_id,
+          details
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          req.user.organisation_id,
+          req.user.id,
+          "completed pending sale",
+          "sales",
+          id,
+          JSON.stringify({
+            saleNumber: sale.sale_number,
+            totalAmount: sale.total_amount,
+            advanceAmount: sale.advance_amount,
+            finalPaymentMethod: paymentMethod,
+            finalCashPaid,
+            finalCardPaid,
+          }),
+        ]
+      );
+
+      await client.query("COMMIT");
+
+      res.json({
+        status: "success",
+        message: "Pending sale completed successfully",
+        sale: updatedSaleResult.rows[0],
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+
+      console.error("Complete pending sale error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to complete pending sale",
+        error: error.message,
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// Cancel pending sale
+app.patch(
+  "/api/sales/:id/cancel-pending",
+  authMiddleware,
+  requirePermission("sales.pending.cancel"),
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const { id } = req.params;
+      const { reason } = req.body;
+
+      if (!reason || !reason.trim()) {
+        return res.status(400).json({
+          status: "error",
+          message: "Cancel reason is required",
+        });
+      }
+
+      await client.query("BEGIN");
+
+      const saleResult = await client.query(
+        `
+        SELECT *
+        FROM sales
+        WHERE id = $1
+        AND organisation_id = $2
+        AND status = 'pending'
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (saleResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({
+          status: "error",
+          message: "Pending sale not found",
+        });
+      }
+
+      const sale = saleResult.rows[0];
+
+      const itemsResult = await client.query(
+        `
+        SELECT *
+        FROM sale_items
+        WHERE sale_id = $1
+        `,
+        [id]
+      );
+
+      for (const item of itemsResult.rows) {
+        if (item.product_id) {
+          await client.query(
+            `
+            UPDATE products
+            SET stock_quantity = stock_quantity + $1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2 AND organisation_id = $3
+            `,
+            [item.quantity, item.product_id, req.user.organisation_id]
+          );
+
+          await client.query(
+            `
+            INSERT INTO stock_movements (
+              organisation_id,
+              product_id,
+              movement_type,
+              quantity,
+              reason,
+              created_by
+            )
+            VALUES ($1, $2, 'pending_cancel', $3, $4, $5)
+            `,
+            [
+              req.user.organisation_id,
+              item.product_id,
+              item.quantity,
+              reason || `Cancelled pending sale ${sale.sale_number}`,
+              req.user.id,
+            ]
+          );
+        }
+      }
+
+      const updatedSaleResult = await client.query(
+        `
+        UPDATE sales
+        SET
+          status = 'cancelled',
+          cancel_reason = $1,
+          cancelled_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2
+        AND organisation_id = $3
+        RETURNING *
+        `,
+        [reason, id, req.user.organisation_id]
+      );
+
+      await client.query(
+        `
+        INSERT INTO audit_logs (
+          organisation_id,
+          user_id,
+          action,
+          table_name,
+          record_id,
+          details
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          req.user.organisation_id,
+          req.user.id,
+          "cancelled pending sale",
+          "sales",
+          id,
+          JSON.stringify({
+            saleNumber: sale.sale_number,
+            totalAmount: sale.total_amount,
+            advanceAmount: sale.advance_amount,
+            returnedItems: itemsResult.rows.length,
+            reason,
+          }),
+        ]
+      );
+
+      await client.query("COMMIT");
+
+      res.json({
+        status: "success",
+        message: "Pending sale cancelled successfully and stock returned",
+        sale: updatedSaleResult.rows[0],
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+
+      console.error("Cancel pending sale error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to cancel pending sale",
         error: error.message,
       });
     } finally {
