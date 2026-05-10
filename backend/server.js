@@ -239,24 +239,24 @@ app.get("/api/setup-database", async (req, res) => {
       ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP;
 
       CREATE TABLE IF NOT EXISTS refunds (
-        id SERIAL PRIMARY KEY,
-        organisation_id INTEGER REFERENCES organisations(id) ON DELETE CASCADE,
-        sale_id INTEGER REFERENCES sales(id) ON DELETE SET NULL,
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        organisation_id UUID REFERENCES organisations(id) ON DELETE CASCADE,
+        sale_id UUID REFERENCES sales(id) ON DELETE SET NULL,
         sale_number VARCHAR(100),
         refund_number VARCHAR(100),
         refund_type VARCHAR(50) NOT NULL,
         total_refund_amount NUMERIC(12,2) DEFAULT 0,
         receipt_received BOOLEAN DEFAULT FALSE,
         reason TEXT,
-        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_by UUID REFERENCES users(id) ON DELETE SET NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
       CREATE TABLE IF NOT EXISTS refund_items (
-        id SERIAL PRIMARY KEY,
-        refund_id INTEGER REFERENCES refunds(id) ON DELETE CASCADE,
-        sale_item_id INTEGER REFERENCES sale_items(id) ON DELETE SET NULL,
-        product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        refund_id UUID REFERENCES refunds(id) ON DELETE CASCADE,
+        sale_item_id UUID REFERENCES sale_items(id) ON DELETE SET NULL,
+        product_id UUID REFERENCES products(id) ON DELETE SET NULL,
         product_name VARCHAR(255),
         quantity INTEGER NOT NULL,
         unit_price NUMERIC(12,2) DEFAULT 0,
@@ -266,16 +266,16 @@ app.get("/api/setup-database", async (req, res) => {
       );
 
       CREATE TABLE IF NOT EXISTS damaged_items (
-        id SERIAL PRIMARY KEY,
-        organisation_id INTEGER REFERENCES organisations(id) ON DELETE CASCADE,
-        refund_id INTEGER REFERENCES refunds(id) ON DELETE SET NULL,
-        product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        organisation_id UUID REFERENCES organisations(id) ON DELETE CASCADE,
+        refund_id UUID REFERENCES refunds(id) ON DELETE SET NULL,
+        product_id UUID REFERENCES products(id) ON DELETE SET NULL,
         product_name VARCHAR(255),
         quantity INTEGER NOT NULL,
         damage_source VARCHAR(100) NOT NULL,
         reason TEXT,
         remark TEXT,
-        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_by UUID REFERENCES users(id) ON DELETE SET NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
@@ -4123,7 +4123,7 @@ app.post(
         }
 
         const saleItem = saleItems.find(
-          (row) => Number(row.id) === Number(saleItemId)
+          (row) => row.id === saleItemId
         );
 
         if (!saleItem) {
