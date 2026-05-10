@@ -1756,3 +1756,37 @@ th {
 .logs-page table {
   margin-bottom: 8px;
 }
+
+.product-filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.product-filters select {
+  min-width: 190px;
+  padding: 12px 13px;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: #111827;
+  color: var(--text);
+  outline: none;
+  font-size: 14px;
+}
+
+.product-filters select:focus {
+  border-color: var(--primary);
+}
+
+@media (max-width: 800px) {
+  .product-filters {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .product-filters select,
+  .product-filters .search-box input {
+    width: 100%;
+  }
+}

@@ -6,7 +6,11 @@ const PRODUCTS_PER_PAGE = 25;
 function Products() {
   const [products, setProducts] = useState([]);
   const [logs, setLogs] = useState([]);
+  const [categories, setCategories] = useState([]);
+
   const [search, setSearch] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("");
+
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -19,6 +23,9 @@ function Products() {
   const [showStockReview, setShowStockReview] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
 
+  const [editMode, setEditMode] = useState(false);
+  const [editingProductId, setEditingProductId] = useState(null);
+
   const [form, setForm] = useState({
     name: "",
     sku: "",
@@ -28,6 +35,7 @@ function Products() {
     sellingPrice: "",
     stockQuantity: "",
     lowStockAlert: "5",
+    categoryId: "",
   });
 
   const [stockForm, setStockForm] = useState({
@@ -36,6 +44,11 @@ function Products() {
     reason: "Stock added from frontend",
   });
 
+  const savedUser = JSON.parse(localStorage.getItem("user") || "{}");
+  const permissions = savedUser.permissions || [];
+
+  const hasPermission = (permission) => permissions.includes(permission);
+
   const totalPages = Math.ceil(products.length / PRODUCTS_PER_PAGE) || 1;
 
   const paginatedProducts = useMemo(() => {
@@ -43,13 +56,23 @@ function Products() {
     return products.slice(startIndex, startIndex + PRODUCTS_PER_PAGE);
   }, [products, currentPage]);
 
-  const fetchProducts = async (searchValue = search) => {
+  const fetchCategories = async () => {
+    try {
+      const response = await api.get("/api/categories");
+      setCategories(response.data.categories);
+    } catch (err) {
+      console.error("Failed to load categories", err);
+    }
+  };
+
+  const fetchProducts = async (searchValue = search, categoryValue = selectedCategory) => {
     try {
       setError("");
 
       const response = await api.get("/api/products", {
         params: {
           search: searchValue || undefined,
+          categoryId: categoryValue || undefined,
         },
       });
 
@@ -62,32 +85,33 @@ function Products() {
 
   const fetchLogs = async () => {
     try {
-        const response = await api.get("/api/audit-logs", {
+      const response = await api.get("/api/audit-logs", {
         params: {
-            tableName: "products",
-            page: 1,
-            limit: 25,
+          tableName: "products",
+          page: 1,
+          limit: 25,
         },
-        });
+      });
 
-        setLogs(response.data.logs);
+      setLogs(response.data.logs);
     } catch (err) {
-        console.error("Failed to load product logs", err);
+      console.error("Failed to load product logs", err);
     }
   };
 
   useEffect(() => {
-    fetchProducts("");
+    fetchProducts("", "");
     fetchLogs();
+    fetchCategories();
   }, []);
 
   useEffect(() => {
     const delaySearch = setTimeout(() => {
-      fetchProducts(search);
+      fetchProducts(search, selectedCategory);
     }, 300);
 
     return () => clearTimeout(delaySearch);
-  }, [search]);
+  }, [search, selectedCategory]);
 
   const resetProductForm = () => {
     setForm({
@@ -99,6 +123,7 @@ function Products() {
       sellingPrice: "",
       stockQuantity: "",
       lowStockAlert: "5",
+      categoryId: "",
     });
   };
 
@@ -113,6 +138,8 @@ function Products() {
   const closeProductModals = () => {
     setShowProductModal(false);
     setShowProductReview(false);
+    setEditMode(false);
+    setEditingProductId(null);
   };
 
   const closeStockModals = () => {
@@ -123,9 +150,33 @@ function Products() {
   };
 
   const handleOpenAddProduct = () => {
+    setEditMode(false);
+    setEditingProductId(null);
     setMessage("");
     setError("");
     resetProductForm();
+    setShowProductModal(true);
+    setShowProductReview(false);
+  };
+
+  const handleOpenEditProduct = (product) => {
+    setEditMode(true);
+    setEditingProductId(product.id);
+    setMessage("");
+    setError("");
+
+    setForm({
+      name: product.name || "",
+      sku: product.sku || "",
+      barcode: product.barcode || "",
+      description: product.description || "",
+      buyingPrice: product.buying_price || "",
+      sellingPrice: product.selling_price || "",
+      stockQuantity: product.stock_quantity || "",
+      lowStockAlert: product.low_stock_alert || "5",
+      categoryId: product.category_id || "",
+    });
+
     setShowProductModal(true);
     setShowProductReview(false);
   };
@@ -184,29 +235,40 @@ function Products() {
     setShowStockReview(true);
   };
 
-  const handleConfirmCreateProduct = async () => {
+  const handleConfirmSaveProduct = async () => {
     try {
       setError("");
       setMessage("");
 
-      await api.post("/api/products", {
+      const payload = {
         name: form.name,
         sku: form.sku,
         barcode: form.barcode,
         description: form.description,
         buyingPrice: Number(form.buyingPrice || 0),
         sellingPrice: Number(form.sellingPrice),
-        stockQuantity: Number(form.stockQuantity || 0),
         lowStockAlert: Number(form.lowStockAlert || 5),
-      });
+        categoryId: form.categoryId || null,
+      };
 
-      setMessage("Product created successfully");
+      if (editMode) {
+        await api.patch(`/api/products/${editingProductId}`, payload);
+        setMessage("Product listing updated successfully");
+      } else {
+        await api.post("/api/products", {
+          ...payload,
+          stockQuantity: Number(form.stockQuantity || 0),
+        });
+
+        setMessage("Product created successfully");
+      }
+
       closeProductModals();
       resetProductForm();
-      fetchProducts(search);
+      fetchProducts(search, selectedCategory);
       fetchLogs();
     } catch (err) {
-      setError(err.response?.data?.message || "Failed to create product");
+      setError(err.response?.data?.message || "Failed to save product");
       setShowProductReview(false);
     }
   };
@@ -224,7 +286,7 @@ function Products() {
 
       setMessage("Stock updated successfully");
       closeStockModals();
-      fetchProducts(search);
+      fetchProducts(search, selectedCategory);
       fetchLogs();
     } catch (err) {
       setError(err.response?.data?.message || "Failed to update stock");
@@ -249,17 +311,26 @@ function Products() {
     return quantity;
   };
 
+  const getSelectedCategoryName = () => {
+    const category = categories.find((item) => item.id === form.categoryId);
+    return category?.name || "No category";
+  };
+
   const formatLogDetails = (log) => {
     const details = log.details || {};
 
     if (log.action === "updated stock") {
-      return `${details.movementType || "stock update"} ${details.quantity || 0}. Reason: ${
-        details.reason || "No reason added"
-      }`;
+      return `${details.movementType || "stock update"} ${
+        details.quantity || 0
+      }. Reason: ${details.reason || "No reason added"}`;
     }
 
     if (log.action === "created product") {
       return `Product: ${details.productName || "Unknown product"}`;
+    }
+
+    if (log.action === "edited product listing") {
+      return `Edited: ${details.productName || "Unknown product"}`;
     }
 
     return "";
@@ -272,16 +343,30 @@ function Products() {
           <div className="page-header">
             <div>
               <h2>Product Database</h2>
-              <p>View, search, and manage all product records.</p>
+              <p>View, search, filter, and manage all product records.</p>
             </div>
 
-            <div className="search-box">
-              <input
-                type="text"
-                placeholder="Search products..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
+            <div className="product-filters">
+              <select
+                value={selectedCategory}
+                onChange={(e) => setSelectedCategory(e.target.value)}
+              >
+                <option value="">All Categories</option>
+                {categories.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
+                  </option>
+                ))}
+              </select>
+
+              <div className="search-box">
+                <input
+                  type="text"
+                  placeholder="Search products..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              </div>
             </div>
           </div>
 
@@ -293,16 +378,19 @@ function Products() {
               <div>
                 <h3>Products</h3>
                 <p>
-                  {products.length} products found · Page {currentPage} of {totalPages}
+                  {products.length} products found · Page {currentPage} of{" "}
+                  {totalPages}
                 </p>
               </div>
 
-              <button
-                className="primary-btn add-product-btn"
-                onClick={handleOpenAddProduct}
-              >
-                + Add Product
-              </button>
+              {hasPermission("products.create") && (
+                <button
+                  className="primary-btn add-product-btn"
+                  onClick={handleOpenAddProduct}
+                >
+                  + Add Product
+                </button>
+              )}
             </div>
 
             <div className="table-wrapper">
@@ -311,6 +399,7 @@ function Products() {
                   <tr>
                     <th>Name</th>
                     <th>SKU</th>
+                    <th>Category</th>
                     <th>Price</th>
                     <th>Stock</th>
                     <th>Status</th>
@@ -321,7 +410,7 @@ function Products() {
                 <tbody>
                   {paginatedProducts.length === 0 && (
                     <tr>
-                      <td colSpan="6">No products found</td>
+                      <td colSpan="7">No products found</td>
                     </tr>
                   )}
 
@@ -329,6 +418,7 @@ function Products() {
                     <tr key={product.id}>
                       <td>{product.name}</td>
                       <td>{product.sku || "-"}</td>
+                      <td>{product.category_name || "-"}</td>
                       <td>${Number(product.selling_price).toFixed(2)}</td>
                       <td>{product.stock_quantity}</td>
                       <td>
@@ -339,12 +429,32 @@ function Products() {
                         )}
                       </td>
                       <td>
-                        <button
-                          className="small-btn"
-                          onClick={() => handleOpenStockModal(product)}
-                        >
-                          Add Stock
-                        </button>
+                        <div className="table-actions">
+                          {hasPermission("products.edit") && (
+                            <button
+                              className="small-btn"
+                              onClick={() => handleOpenStockModal(product)}
+                            >
+                              Add Stock
+                            </button>
+                          )}
+
+                          {hasPermission("products.listing.edit") && (
+                            <button
+                              className="small-btn secondary-table-btn"
+                              onClick={() => handleOpenEditProduct(product)}
+                            >
+                              Edit
+                            </button>
+                          )}
+
+                          {!hasPermission("products.edit") &&
+                            !hasPermission("products.listing.edit") && (
+                              <span className="muted-action-text">
+                                No actions
+                              </span>
+                            )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -362,8 +472,11 @@ function Products() {
               </button>
 
               <span>
-                Showing {(currentPage - 1) * PRODUCTS_PER_PAGE + 1}-
-                {Math.min(currentPage * PRODUCTS_PER_PAGE, products.length)} of{" "}
+                Showing{" "}
+                {products.length === 0
+                  ? 0
+                  : (currentPage - 1) * PRODUCTS_PER_PAGE + 1}
+                -{Math.min(currentPage * PRODUCTS_PER_PAGE, products.length)} of{" "}
                 {products.length}
               </span>
 
@@ -388,79 +501,96 @@ function Products() {
             {logs.length === 0 && <p className="empty-log">No activity yet.</p>}
 
             {logs.map((log) => {
-                const details = log.details || {};
-                const isStockUpdate = log.action === "updated stock";
-                const isProductCreate = log.action === "created product";
+              const details = log.details || {};
+              const isStockUpdate = log.action === "updated stock";
+              const isProductCreate = log.action === "created product";
+              const isProductEdit = log.action === "edited product listing";
 
-                return (
-                    <div className="log-item" key={log.id}>
-                    <div className="log-top">
-                        <div className="log-avatar">👤</div>
+              return (
+                <div className="log-item" key={log.id}>
+                  <div className="log-top">
+                    <div className="log-avatar">👤</div>
 
-                        <div>
-                        <strong>{log.full_name || "Unknown User"}</strong>
-                        <span>{log.role_name || "Unknown Role"}</span>
+                    <div>
+                      <strong>{log.full_name || "Unknown User"}</strong>
+                      <span>{log.role_name || "Unknown Role"}</span>
+                    </div>
+                  </div>
+
+                  <div className="log-action">
+                    {isStockUpdate && (
+                      <>
+                        <span className="log-badge warning">Stock Update</span>
+                        <p>
+                          Updated{" "}
+                          <strong>{details.productName || "product"}</strong>
+                        </p>
+
+                        <div className="log-details-grid">
+                          <div>
+                            <span>Type</span>
+                            <strong>{details.movementType}</strong>
+                          </div>
+
+                          <div>
+                            <span>Qty</span>
+                            <strong>{details.quantity}</strong>
+                          </div>
+
+                          <div>
+                            <span>Before</span>
+                            <strong>{details.previousStock}</strong>
+                          </div>
+
+                          <div>
+                            <span>After</span>
+                            <strong>{details.newStock}</strong>
+                          </div>
                         </div>
-                    </div>
 
-                    <div className="log-action">
-                        {isStockUpdate && (
-                        <>
-                            <span className="log-badge warning">Stock Update</span>
-                            <p>
-                            Updated <strong>{details.productName || "product"}</strong>
-                            </p>
+                        <p className="log-reason">
+                          Reason: {details.reason || "No reason added"}
+                        </p>
+                      </>
+                    )}
 
-                            <div className="log-details-grid">
-                            <div>
-                                <span>Type</span>
-                                <strong>{details.movementType}</strong>
-                            </div>
+                    {isProductCreate && (
+                      <>
+                        <span className="log-badge success">
+                          Product Created
+                        </span>
+                        <p>
+                          Added{" "}
+                          <strong>{details.productName || "new product"}</strong>
+                        </p>
+                      </>
+                    )}
 
-                            <div>
-                                <span>Qty</span>
-                                <strong>{details.quantity}</strong>
-                            </div>
+                    {isProductEdit && (
+                      <>
+                        <span className="log-badge neutral">
+                          Listing Edited
+                        </span>
+                        <p>
+                          Edited{" "}
+                          <strong>{details.productName || "product"}</strong>
+                        </p>
+                      </>
+                    )}
 
-                            <div>
-                                <span>Before</span>
-                                <strong>{details.previousStock}</strong>
-                            </div>
+                    {!isStockUpdate && !isProductCreate && !isProductEdit && (
+                      <>
+                        <span className="log-badge neutral">{log.action}</span>
+                        <p>{formatLogDetails(log)}</p>
+                      </>
+                    )}
+                  </div>
 
-                            <div>
-                                <span>After</span>
-                                <strong>{details.newStock}</strong>
-                            </div>
-                            </div>
-
-                            <p className="log-reason">
-                            Reason: {details.reason || "No reason added"}
-                            </p>
-                        </>
-                        )}
-
-                        {isProductCreate && (
-                        <>
-                            <span className="log-badge success">Product Created</span>
-                            <p>
-                            Added <strong>{details.productName || "new product"}</strong>
-                            </p>
-                        </>
-                        )}
-
-                        {!isStockUpdate && !isProductCreate && (
-                        <>
-                            <span className="log-badge neutral">{log.action}</span>
-                            <p>{formatLogDetails(log)}</p>
-                        </>
-                        )}
-                    </div>
-
-                    <div className="log-time">
-                        {new Date(log.created_at).toLocaleString()}
-                    </div>
-                    </div>
-                );
+                  <div className="log-time">
+                    {new Date(log.created_at).toLocaleString()}
+                  </div>
+                </div>
+              );
             })}
           </div>
         </aside>
@@ -468,11 +598,19 @@ function Products() {
 
       {showProductModal && (
         <div className="modal-overlay">
-          <div className={`product-modal ${showProductReview ? "modal-blurred" : ""}`}>
+          <div
+            className={`product-modal ${
+              showProductReview ? "modal-blurred" : ""
+            }`}
+          >
             <div className="modal-header">
               <div>
-                <h3>Add Product</h3>
-                <p>Enter product details and continue to verify.</p>
+                <h3>{editMode ? "Edit Product Listing" : "Add Product"}</h3>
+                <p>
+                  {editMode
+                    ? "Update product listing details and continue to verify."
+                    : "Enter product details and continue to verify."}
+                </p>
               </div>
 
               <button className="modal-close-btn" onClick={closeProductModals}>
@@ -512,6 +650,20 @@ function Products() {
                 </div>
               </div>
 
+              <label>Category</label>
+              <select
+                name="categoryId"
+                value={form.categoryId}
+                onChange={handleChange}
+              >
+                <option value="">No category</option>
+                {categories.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
+                  </option>
+                ))}
+              </select>
+
               <label>Description</label>
               <textarea
                 name="description"
@@ -546,16 +698,18 @@ function Products() {
               </div>
 
               <div className="form-row">
-                <div>
-                  <label>Stock Quantity</label>
-                  <input
-                    name="stockQuantity"
-                    type="number"
-                    value={form.stockQuantity}
-                    onChange={handleChange}
-                    placeholder="0"
-                  />
-                </div>
+                {!editMode && (
+                  <div>
+                    <label>Stock Quantity</label>
+                    <input
+                      name="stockQuantity"
+                      type="number"
+                      value={form.stockQuantity}
+                      onChange={handleChange}
+                      placeholder="0"
+                    />
+                  </div>
+                )}
 
                 <div>
                   <label>Low Stock Alert</label>
@@ -569,7 +723,11 @@ function Products() {
               </div>
 
               <div className="modal-actions">
-                <button type="button" className="secondary-btn" onClick={closeProductModals}>
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={closeProductModals}
+                >
                   Cancel
                 </button>
                 <button type="submit" className="primary-btn">
@@ -581,7 +739,11 @@ function Products() {
 
           {showProductReview && (
             <div className="review-modal">
-              <h3>Confirm Product Details</h3>
+              <h3>
+                {editMode
+                  ? "Confirm Product Update"
+                  : "Confirm Product Details"}
+              </h3>
               <p>Please verify the product before saving it.</p>
 
               <div className="review-grid">
@@ -601,6 +763,11 @@ function Products() {
                 </div>
 
                 <div>
+                  <span>Category</span>
+                  <strong>{getSelectedCategoryName()}</strong>
+                </div>
+
+                <div>
                   <span>Buying Price</span>
                   <strong>${Number(form.buyingPrice || 0).toFixed(2)}</strong>
                 </div>
@@ -610,10 +777,12 @@ function Products() {
                   <strong>${Number(form.sellingPrice || 0).toFixed(2)}</strong>
                 </div>
 
-                <div>
-                  <span>Stock Quantity</span>
-                  <strong>{Number(form.stockQuantity || 0)}</strong>
-                </div>
+                {!editMode && (
+                  <div>
+                    <span>Stock Quantity</span>
+                    <strong>{Number(form.stockQuantity || 0)}</strong>
+                  </div>
+                )}
 
                 <div>
                   <span>Low Stock Alert</span>
@@ -638,9 +807,9 @@ function Products() {
                 <button
                   type="button"
                   className="primary-btn"
-                  onClick={handleConfirmCreateProduct}
+                  onClick={handleConfirmSaveProduct}
                 >
-                  Confirm & Save
+                  {editMode ? "Confirm & Update" : "Confirm & Save"}
                 </button>
               </div>
             </div>
@@ -650,7 +819,9 @@ function Products() {
 
       {showStockModal && selectedProduct && (
         <div className="modal-overlay">
-          <div className={`stock-modal ${showStockReview ? "modal-blurred" : ""}`}>
+          <div
+            className={`stock-modal ${showStockReview ? "modal-blurred" : ""}`}
+          >
             <div className="modal-header">
               <div>
                 <h3>Update Stock</h3>
@@ -705,7 +876,11 @@ function Products() {
               </div>
 
               <div className="modal-actions">
-                <button type="button" className="secondary-btn" onClick={closeStockModals}>
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={closeStockModals}
+                >
                   Cancel
                 </button>
                 <button type="submit" className="primary-btn">
