@@ -1943,6 +1943,7 @@ app.delete(
 );
 
 // Get products supplied by one supplier
+// Get stock batches supplied by one supplier
 app.get(
   "/api/suppliers/:id/products",
   authMiddleware,
@@ -1968,38 +1969,67 @@ app.get(
         });
       }
 
-      const productsResult = await pool.query(
+      const batchesResult = await pool.query(
         `
         SELECT
-          products.id,
-          products.name,
+          product_stock_batches.id AS batch_id,
+          product_stock_batches.product_id,
+          product_stock_batches.buying_price,
+          product_stock_batches.selling_price,
+          product_stock_batches.quantity,
+          product_stock_batches.original_quantity,
+          product_stock_batches.batch_note,
+          product_stock_batches.created_at,
+          products.name AS product_name,
           products.sku,
           products.barcode,
-          products.selling_price,
-          products.stock_quantity,
           products.low_stock_alert,
           categories.name AS category_name
-        FROM products
+        FROM product_stock_batches
+        INNER JOIN products ON product_stock_batches.product_id = products.id
         LEFT JOIN categories ON products.category_id = categories.id
-        WHERE products.supplier_id = $1
-        AND products.organisation_id = $2
+        WHERE product_stock_batches.supplier_id = $1
+        AND product_stock_batches.organisation_id = $2
+        AND product_stock_batches.is_active = true
         AND products.is_active = true
-        ORDER BY products.name ASC
+        ORDER BY products.name ASC,
+                 product_stock_batches.selling_price DESC,
+                 product_stock_batches.created_at DESC
         `,
         [id, req.user.organisation_id]
+      );
+
+      const summary = batchesResult.rows.reduce(
+        (totals, batch) => {
+          totals.batchCount += 1;
+          totals.totalCurrentStock += Number(batch.quantity || 0);
+          totals.totalOriginalStock += Number(batch.original_quantity || 0);
+          totals.totalStockValue +=
+            Number(batch.quantity || 0) * Number(batch.selling_price || 0);
+
+          return totals;
+        },
+        {
+          batchCount: 0,
+          totalCurrentStock: 0,
+          totalOriginalStock: 0,
+          totalStockValue: 0,
+        }
       );
 
       res.json({
         status: "success",
         supplier: supplierCheck.rows[0],
-        products: productsResult.rows,
+        summary,
+        batches: batchesResult.rows,
+        products: batchesResult.rows,
       });
     } catch (error) {
-      console.error("Get supplier products error:", error.message);
+      console.error("Get supplier product batches error:", error.message);
 
       res.status(500).json({
         status: "error",
-        message: "Failed to get supplier products",
+        message: "Failed to get supplier product batches",
         error: error.message,
       });
     }

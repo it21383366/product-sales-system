@@ -20,6 +20,7 @@ function Suppliers() {
     useState(false);
   const [supplierProducts, setSupplierProducts] = useState([]);
   const [supplierProductsTitle, setSupplierProductsTitle] = useState("");
+  const [supplierProductsSummary, setSupplierProductsSummary] = useState(null);
 
   const [editMode, setEditMode] = useState(false);
   const [editingSupplierId, setEditingSupplierId] = useState(null);
@@ -140,20 +141,26 @@ function Suppliers() {
   const openSupplierProducts = async (supplier) => {
     try {
       setError("");
+      setSupplierProducts([]);
+      setSupplierProductsSummary(null);
 
       const response = await api.get(`/api/suppliers/${supplier.id}/products`);
 
-      setSupplierProducts(response.data.products || []);
+      setSupplierProducts(response.data.batches || response.data.products || []);
+      setSupplierProductsSummary(response.data.summary || null);
       setSupplierProductsTitle(response.data.supplier?.name || supplier.name);
       setShowSupplierProductsModal(true);
     } catch (err) {
-      setError(err.response?.data?.message || "Failed to load supplier products");
+      setError(
+        err.response?.data?.message || "Failed to load supplier stock batches"
+      );
     }
   };
 
   const closeSupplierProducts = () => {
     setShowSupplierProductsModal(false);
     setSupplierProducts([]);
+    setSupplierProductsSummary(null);
     setSupplierProductsTitle("");
   };
 
@@ -296,10 +303,12 @@ function Suppliers() {
                       {supplier.name}
                     </button>
                   </td>
+
                   <td>{supplier.contact_person || "-"}</td>
                   <td>{supplier.email || "-"}</td>
                   <td>{supplier.phone || "-"}</td>
                   <td>{supplier.address || "-"}</td>
+
                   <td>
                     <div className="table-actions">
                       {hasPermission("suppliers.edit") && (
@@ -525,7 +534,9 @@ function Suppliers() {
             <div className="confirm-user-box">
               <span>Supplier</span>
               <strong>{selectedSupplier.name}</strong>
-              <small>{selectedSupplier.email || selectedSupplier.phone || "-"}</small>
+              <small>
+                {selectedSupplier.email || selectedSupplier.phone || "-"}
+              </small>
             </div>
 
             <div className="modal-actions">
@@ -551,27 +562,65 @@ function Suppliers() {
 
       {showSupplierProductsModal && (
         <div className="modal-overlay">
-          <div className="supplier-products-modal">
+          <div className="supplier-products-modal supplier-batches-modal">
             <div className="modal-header">
               <div>
                 <h3>{supplierProductsTitle}</h3>
-                <p>Products supplied by this supplier with current stock.</p>
+                <p>
+                  Stock batches supplied by this supplier with current stock,
+                  original stock, and batch price.
+                </p>
               </div>
 
-              <button className="modal-close-btn" onClick={closeSupplierProducts}>
+              <button
+                className="modal-close-btn"
+                onClick={closeSupplierProducts}
+              >
                 ×
               </button>
             </div>
 
-            <div className="table-wrapper">
+            {supplierProductsSummary && (
+              <div className="supplier-batch-summary">
+                <div>
+                  <span>Total Batches</span>
+                  <strong>{supplierProductsSummary.batchCount}</strong>
+                </div>
+
+                <div>
+                  <span>Current Stock</span>
+                  <strong>{supplierProductsSummary.totalCurrentStock}</strong>
+                </div>
+
+                <div>
+                  <span>Original Stock</span>
+                  <strong>{supplierProductsSummary.totalOriginalStock}</strong>
+                </div>
+
+                <div>
+                  <span>Stock Value</span>
+                  <strong>
+                    $
+                    {Number(
+                      supplierProductsSummary.totalStockValue || 0
+                    ).toFixed(2)}
+                  </strong>
+                </div>
+              </div>
+            )}
+
+            <div className="table-wrapper supplier-batches-table-wrapper">
               <table>
                 <thead>
                   <tr>
                     <th>Product</th>
                     <th>SKU</th>
                     <th>Category</th>
-                    <th>Price</th>
-                    <th>Current Stock</th>
+                    <th>Buying Price</th>
+                    <th>Selling Price</th>
+                    <th>Batch Stock</th>
+                    <th>Original Stock</th>
+                    <th>Batch Note</th>
                     <th>Status</th>
                   </tr>
                 </thead>
@@ -579,19 +628,25 @@ function Suppliers() {
                 <tbody>
                   {supplierProducts.length === 0 && (
                     <tr>
-                      <td colSpan="6">No products linked to this supplier</td>
+                      <td colSpan="9">
+                        No stock batches found for this supplier
+                      </td>
                     </tr>
                   )}
 
-                  {supplierProducts.map((product) => (
-                    <tr key={product.id}>
-                      <td>{product.name}</td>
-                      <td>{product.sku || "-"}</td>
-                      <td>{product.category_name || "-"}</td>
-                      <td>${Number(product.selling_price).toFixed(2)}</td>
-                      <td>{product.stock_quantity}</td>
+                  {supplierProducts.map((batch) => (
+                    <tr key={batch.batch_id}>
+                      <td>{batch.product_name || "-"}</td>
+                      <td>{batch.sku || "-"}</td>
+                      <td>{batch.category_name || "-"}</td>
+                      <td>${Number(batch.buying_price || 0).toFixed(2)}</td>
+                      <td>${Number(batch.selling_price || 0).toFixed(2)}</td>
+                      <td>{Number(batch.quantity || 0)}</td>
+                      <td>{Number(batch.original_quantity || 0)}</td>
+                      <td>{batch.batch_note || "-"}</td>
                       <td>
-                        {product.stock_quantity <= product.low_stock_alert ? (
+                        {Number(batch.quantity || 0) <=
+                        Number(batch.low_stock_alert || 0) ? (
                           <span className="badge danger">Low Stock</span>
                         ) : (
                           <span className="badge success">In Stock</span>
