@@ -2722,3 +2722,56 @@ th {
   background: #ffffff;
   padding: 3px;
 }
+
+.batch-info-box {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  color: #bfdbfe;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.batch-price-badge {
+  display: inline-flex;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.14);
+  color: #bfdbfe;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.batch-sale-item-row {
+  grid-template-columns: 1fr 1fr 90px 120px auto;
+}
+
+.batch-row-note {
+  grid-column: 1 / -1;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  color: #bfdbfe;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.batch-row-note strong {
+  color: #dbeafe;
+}
+
+@media (max-width: 1000px) {
+  .batch-sale-item-row {
+    grid-template-columns: 1fr;
+  }
+
+  .batch-row-note {
+    grid-column: auto;
+  }
+}

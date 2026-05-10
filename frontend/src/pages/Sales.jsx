@@ -14,9 +14,18 @@ function Sales() {
     ? "completed"
     : "pending";
 
+  const emptySaleItem = {
+    productId: "",
+    stockBatchId: "",
+    quantity: 1,
+    unitPrice: 0,
+    availableQuantity: 0,
+  };
+
   const [sales, setSales] = useState([]);
   const [products, setProducts] = useState([]);
   const [settings, setSettings] = useState(null);
+  const [stockBatchesByProduct, setStockBatchesByProduct] = useState({});
 
   const [page, setPage] = useState(1);
   const [message, setMessage] = useState("");
@@ -60,7 +69,7 @@ function Sales() {
     cashAmount: "",
     cardAmount: "",
     editReason: "",
-    items: [{ productId: "", quantity: 1 }],
+    items: [{ ...emptySaleItem }],
   });
 
   const totalPages = Math.ceil(sales.length / SALES_PER_PAGE) || 1;
@@ -107,14 +116,38 @@ function Sales() {
     return products.find((product) => product.id === productId);
   };
 
-  const subtotal = form.items.reduce((sum, item) => {
-    const product = getProduct(item.productId);
+  const fetchProductBatches = async (productId) => {
+    try {
+      if (!productId) return [];
 
-    if (!product) {
-      return sum;
+      if (stockBatchesByProduct[productId]) {
+        return stockBatchesByProduct[productId];
+      }
+
+      const response = await api.get(`/api/products/${productId}/stock-batches`);
+      const batches = response.data.batches || [];
+
+      setStockBatchesByProduct((current) => ({
+        ...current,
+        [productId]: batches,
+      }));
+
+      return batches;
+    } catch (err) {
+      setSaleModalError(
+        err.response?.data?.message || "Failed to load stock batches"
+      );
+      return [];
     }
+  };
 
-    return sum + Number(product.selling_price) * Number(item.quantity || 0);
+  const getSelectedBatch = (item) => {
+    const batches = stockBatchesByProduct[item.productId] || [];
+    return batches.find((batch) => batch.id === item.stockBatchId);
+  };
+
+  const subtotal = form.items.reduce((sum, item) => {
+    return sum + Number(item.unitPrice || 0) * Number(item.quantity || 0);
   }, 0);
 
   const discountAmount = Number(form.discountAmount || 0);
@@ -134,7 +167,7 @@ function Sales() {
       cashAmount: "",
       cardAmount: "",
       editReason: "",
-      items: [{ productId: "", quantity: 1 }],
+      items: [{ ...emptySaleItem }],
     });
   };
 
@@ -162,6 +195,14 @@ function Sales() {
       setEditMode(true);
       setEditingSaleId(saleId);
 
+      const mappedItems = sale.items.map((item) => ({
+        productId: item.product_id,
+        stockBatchId: item.stock_batch_id || "",
+        quantity: item.quantity,
+        unitPrice: Number(item.unit_price || 0),
+        availableQuantity: Number(item.quantity || 0),
+      }));
+
       setForm({
         saleStatus: "completed",
         paymentMethod: sale.payment_method || "cash",
@@ -171,10 +212,7 @@ function Sales() {
         cashAmount: sale.cash_amount || "",
         cardAmount: sale.card_amount || "",
         editReason: "",
-        items: sale.items.map((item) => ({
-          productId: item.product_id,
-          quantity: item.quantity,
-        })),
+        items: mappedItems,
       });
 
       setShowSaleModal(true);
@@ -208,10 +246,61 @@ function Sales() {
     setSaleModalError("");
   };
 
+  const handleProductChange = async (index, productId) => {
+    const batches = await fetchProductBatches(productId);
+    const firstBatch = batches[0];
+    const product = getProduct(productId);
+
+    const updatedItems = [...form.items];
+
+    updatedItems[index] = {
+      ...updatedItems[index],
+      productId,
+      stockBatchId: firstBatch?.id || "",
+      quantity: 1,
+      unitPrice: Number(
+        firstBatch?.selling_price ||
+          product?.highest_selling_price ||
+          product?.selling_price ||
+          0
+      ),
+      availableQuantity: Number(firstBatch?.quantity || product?.stock_quantity || 0),
+    };
+
+    setForm({
+      ...form,
+      items: updatedItems,
+    });
+
+    setSaleModalError("");
+  };
+
+  const handleBatchChange = (index, stockBatchId) => {
+    const updatedItems = [...form.items];
+    const item = updatedItems[index];
+    const batches = stockBatchesByProduct[item.productId] || [];
+    const selectedBatch = batches.find((batch) => batch.id === stockBatchId);
+
+    updatedItems[index] = {
+      ...item,
+      stockBatchId,
+      quantity: 1,
+      unitPrice: Number(selectedBatch?.selling_price || 0),
+      availableQuantity: Number(selectedBatch?.quantity || 0),
+    };
+
+    setForm({
+      ...form,
+      items: updatedItems,
+    });
+
+    setSaleModalError("");
+  };
+
   const addItemRow = () => {
     setForm({
       ...form,
-      items: [...form.items, { productId: "", quantity: 1 }],
+      items: [...form.items, { ...emptySaleItem }],
     });
 
     setSaleModalError("");
@@ -283,11 +372,29 @@ function Sales() {
     }
 
     const invalidItem = form.items.find(
-      (item) => !item.productId || Number(item.quantity) <= 0
+      (item) =>
+        !item.productId ||
+        !item.stockBatchId ||
+        Number(item.quantity) <= 0 ||
+        Number(item.unitPrice) <= 0
     );
 
     if (invalidItem) {
-      setSaleModalError("Please select products and valid quantities");
+      setSaleModalError(
+        "Please select product, stock batch, and valid quantity for each item"
+      );
+      return;
+    }
+
+    const overStockItem = form.items.find(
+      (item) => Number(item.quantity) > Number(item.availableQuantity || 0)
+    );
+
+    if (overStockItem && !editMode) {
+      const product = getProduct(overStockItem.productId);
+      setSaleModalError(
+        `${product?.name || "Product"} quantity is more than selected batch stock`
+      );
       return;
     }
 
@@ -318,6 +425,7 @@ function Sales() {
         editReason: form.editReason,
         items: form.items.map((item) => ({
           productId: item.productId,
+          stockBatchId: item.stockBatchId,
           quantity: Number(item.quantity),
         })),
       };
@@ -591,7 +699,9 @@ function Sales() {
       await fetchSales();
       await fetchProducts();
     } catch (err) {
-      setRefundModalError(err.response?.data?.message || "Failed to create refund");
+      setRefundModalError(
+        err.response?.data?.message || "Failed to create refund"
+      );
     }
   };
 
@@ -1004,7 +1114,9 @@ function Sales() {
             <div className="modal-header">
               <div>
                 <h3>{editMode ? "Edit Sale" : "New Sale"}</h3>
-                <p>Select products, sale type, payment method, and continue.</p>
+                <p>
+                  Select products, stock batch, sale type, and payment method.
+                </p>
               </div>
 
               <button className="modal-close-btn" onClick={closeModals}>
@@ -1049,16 +1161,16 @@ function Sales() {
 
               {form.items.map((item, index) => {
                 const product = getProduct(item.productId);
+                const selectedBatch = getSelectedBatch(item);
+                const batchOptions = stockBatchesByProduct[item.productId] || [];
 
                 return (
-                  <div className="sale-item-row" key={index}>
+                  <div className="sale-item-row batch-sale-item-row" key={index}>
                     <div>
                       <SearchableSelect
                         label="Product"
                         value={item.productId}
-                        onChange={(value) =>
-                          updateItem(index, "productId", value)
-                        }
+                        onChange={(value) => handleProductChange(index, value)}
                         placeholder="Select product"
                         searchPlaceholder="Search products..."
                         options={products.map((product) => ({
@@ -1069,10 +1181,35 @@ function Sales() {
                     </div>
 
                     <div>
+                      <SearchableSelect
+                        label="Stock Batch"
+                        value={item.stockBatchId}
+                        onChange={(value) => handleBatchChange(index, value)}
+                        placeholder={
+                          item.productId
+                            ? "Select stock batch"
+                            : "Select product first"
+                        }
+                        searchPlaceholder="Search batches..."
+                        options={batchOptions.map((batch) => ({
+                          value: batch.id,
+                          label: `$${Number(batch.selling_price || 0).toFixed(
+                            2
+                          )} - ${batch.quantity} available${
+                            batch.supplier_name
+                              ? ` - ${batch.supplier_name}`
+                              : ""
+                          }`,
+                        }))}
+                      />
+                    </div>
+
+                    <div>
                       <label>Qty</label>
                       <input
                         type="number"
                         min="1"
+                        max={item.availableQuantity || undefined}
                         value={item.quantity}
                         onChange={(e) =>
                           updateItem(index, "quantity", e.target.value)
@@ -1084,14 +1221,10 @@ function Sales() {
                     <div>
                       <label>Total</label>
                       <input
-                        value={
-                          product
-                            ? `$${(
-                                Number(product.selling_price) *
-                                Number(item.quantity || 0)
-                              ).toFixed(2)}`
-                            : "$0.00"
-                        }
+                        value={`$${(
+                          Number(item.unitPrice || 0) *
+                          Number(item.quantity || 0)
+                        ).toFixed(2)}`}
                         readOnly
                       />
                     </div>
@@ -1104,6 +1237,26 @@ function Sales() {
                     >
                       Remove
                     </button>
+
+                    <div className="batch-row-note">
+                      {product && selectedBatch ? (
+                        <>
+                          <strong>Selected batch:</strong> $
+                          {Number(selectedBatch.selling_price || 0).toFixed(2)} ·{" "}
+                          {selectedBatch.quantity} available
+                          {selectedBatch.supplier_name
+                            ? ` · ${selectedBatch.supplier_name}`
+                            : ""}
+                        </>
+                      ) : product ? (
+                        <>
+                          <strong>No batch selected.</strong> Select stock batch
+                          to apply the correct selling price.
+                        </>
+                      ) : (
+                        "Select a product to load stock batches."
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -1336,6 +1489,20 @@ function Sales() {
                   <strong>${totalAmount.toFixed(2)}</strong>
                 </div>
 
+                <div className="review-full">
+                  <span>Selected Items</span>
+                  <strong>
+                    {form.items
+                      .map((item) => {
+                        const product = getProduct(item.productId);
+                        return `${product?.name || "Product"} x ${
+                          item.quantity
+                        } @ $${Number(item.unitPrice || 0).toFixed(2)}`;
+                      })
+                      .join(" | ")}
+                  </strong>
+                </div>
+
                 {form.saleStatus === "pending" && !editMode && (
                   <>
                     <div>
@@ -1402,6 +1569,7 @@ function Sales() {
         </div>
       )}
 
+      {/* Keep your existing complete/cancel/refund modals below unchanged */}
       {showCompleteModal && selectedPendingSale && (
         <div className="modal-overlay">
           <div className="confirm-modal">

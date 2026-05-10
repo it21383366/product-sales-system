@@ -16,6 +16,8 @@ function Products() {
 
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [modalError, setModalError] = useState("");
+  const [stockModalError, setStockModalError] = useState("");
 
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -25,6 +27,9 @@ function Products() {
   const [showStockModal, setShowStockModal] = useState(false);
   const [showStockReview, setShowStockReview] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
+
+  const [deleteProduct, setDeleteProduct] = useState(null);
+  const [deleteModalError, setDeleteModalError] = useState("");
 
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [categoryForm, setCategoryForm] = useState({
@@ -54,7 +59,11 @@ function Products() {
   const [stockForm, setStockForm] = useState({
     movementType: "increase",
     quantity: "",
+    buyingPrice: "",
+    sellingPrice: "",
+    supplierId: "",
     reason: "Stock added from frontend",
+    batchNote: "",
   });
 
   const savedUser = JSON.parse(localStorage.getItem("user") || "{}");
@@ -156,11 +165,18 @@ function Products() {
     });
   };
 
-  const resetStockForm = () => {
+  const resetStockForm = (product = null) => {
     setStockForm({
       movementType: "increase",
       quantity: "",
+      buyingPrice: product?.buying_price || "",
+      sellingPrice:
+        product?.highest_selling_price ||
+        product?.selling_price ||
+        "",
+      supplierId: product?.supplier_id || "",
       reason: "Stock added from frontend",
+      batchNote: "",
     });
   };
 
@@ -169,12 +185,14 @@ function Products() {
     setShowProductReview(false);
     setEditMode(false);
     setEditingProductId(null);
+    setModalError("");
   };
 
   const closeStockModals = () => {
     setShowStockModal(false);
     setShowStockReview(false);
     setSelectedProduct(null);
+    setStockModalError("");
     resetStockForm();
   };
 
@@ -312,6 +330,7 @@ function Products() {
     setEditingProductId(null);
     setMessage("");
     setError("");
+    setModalError("");
     resetProductForm();
     setShowProductModal(true);
     setShowProductReview(false);
@@ -322,6 +341,7 @@ function Products() {
     setEditingProductId(product.id);
     setMessage("");
     setError("");
+    setModalError("");
 
     setForm({
       name: product.name || "",
@@ -343,13 +363,22 @@ function Products() {
   const handleOpenStockModal = (product) => {
     setMessage("");
     setError("");
+    setStockModalError("");
     setSelectedProduct(product);
-    resetStockForm();
+    resetStockForm(product);
     setShowStockModal(true);
     setShowStockReview(false);
   };
 
+  const handleOpenDeleteProduct = (product) => {
+    setMessage("");
+    setError("");
+    setDeleteModalError("");
+    setDeleteProduct(product);
+  };
+
   const handleChange = (e) => {
+    setModalError("");
     setForm({
       ...form,
       [e.target.name]: e.target.value,
@@ -357,6 +386,7 @@ function Products() {
   };
 
   const handleStockChange = (e) => {
+    setStockModalError("");
     setStockForm({
       ...stockForm,
       [e.target.name]: e.target.value,
@@ -367,14 +397,15 @@ function Products() {
     e.preventDefault();
     setError("");
     setMessage("");
+    setModalError("");
 
     if (!form.name.trim()) {
-      setError("Product name is required");
+      setModalError("Product name is required");
       return;
     }
 
-    if (!form.sellingPrice) {
-      setError("Selling price is required");
+    if (!form.sellingPrice || Number(form.sellingPrice) <= 0) {
+      setModalError("Selling price is required and must be greater than 0");
       return;
     }
 
@@ -385,9 +416,25 @@ function Products() {
     e.preventDefault();
     setError("");
     setMessage("");
+    setStockModalError("");
 
     if (!stockForm.quantity || Number(stockForm.quantity) <= 0) {
-      setError("Stock quantity must be greater than 0");
+      setStockModalError("Stock quantity must be greater than 0");
+      return;
+    }
+
+    if (
+      stockForm.movementType === "increase" &&
+      (!stockForm.sellingPrice || Number(stockForm.sellingPrice) <= 0)
+    ) {
+      setStockModalError("Selling price is required for a new stock batch");
+      return;
+    }
+
+    const newStock = getStockAfterUpdate();
+
+    if (stockForm.movementType === "decrease" && newStock < 0) {
+      setStockModalError("Stock cannot be negative");
       return;
     }
 
@@ -398,6 +445,7 @@ function Products() {
     try {
       setError("");
       setMessage("");
+      setModalError("");
 
       const payload = {
         name: form.name,
@@ -428,7 +476,7 @@ function Products() {
       fetchProducts(search, selectedCategory, selectedSupplier);
       fetchLogs();
     } catch (err) {
-      setError(err.response?.data?.message || "Failed to save product");
+      setModalError(err.response?.data?.message || "Failed to save product");
       setShowProductReview(false);
     }
   };
@@ -437,11 +485,16 @@ function Products() {
     try {
       setError("");
       setMessage("");
+      setStockModalError("");
 
       await api.patch(`/api/products/${selectedProduct.id}/stock`, {
         movementType: stockForm.movementType,
         quantity: Number(stockForm.quantity),
         reason: stockForm.reason || "Stock updated from frontend",
+        buyingPrice: Number(stockForm.buyingPrice || 0),
+        sellingPrice: Number(stockForm.sellingPrice || 0),
+        supplierId: stockForm.supplierId || null,
+        batchNote: stockForm.batchNote,
       });
 
       setMessage("Stock updated successfully");
@@ -449,15 +502,39 @@ function Products() {
       fetchProducts(search, selectedCategory, selectedSupplier);
       fetchLogs();
     } catch (err) {
-      setError(err.response?.data?.message || "Failed to update stock");
+      setStockModalError(
+        err.response?.data?.message || "Failed to update stock"
+      );
       setShowStockReview(false);
+    }
+  };
+
+  const handleConfirmDeleteProduct = async () => {
+    try {
+      setDeleteModalError("");
+
+      if (!deleteProduct) {
+        return;
+      }
+
+      await api.delete(`/api/products/${deleteProduct.id}`);
+
+      setMessage("Product deleted successfully");
+      setDeleteProduct(null);
+
+      await fetchProducts(search, selectedCategory, selectedSupplier);
+      await fetchLogs();
+    } catch (err) {
+      setDeleteModalError(
+        err.response?.data?.message || "Failed to delete product"
+      );
     }
   };
 
   const getStockAfterUpdate = () => {
     if (!selectedProduct) return 0;
 
-    const currentStock = Number(selectedProduct.stock_quantity);
+    const currentStock = Number(selectedProduct.stock_quantity || 0);
     const quantity = Number(stockForm.quantity || 0);
 
     if (stockForm.movementType === "increase") {
@@ -481,6 +558,26 @@ function Products() {
     return supplier?.name || "No supplier";
   };
 
+  const getStockFormSupplierName = () => {
+    const supplier = suppliers.find((item) => item.id === stockForm.supplierId);
+    return supplier?.name || "No supplier";
+  };
+
+  const getPriceRangeText = (product) => {
+    const lowest = Number(
+      product.lowest_selling_price || product.selling_price || 0
+    );
+    const highest = Number(
+      product.highest_selling_price || product.selling_price || 0
+    );
+
+    if (lowest === highest) {
+      return `$${highest.toFixed(2)}`;
+    }
+
+    return `$${lowest.toFixed(2)} - $${highest.toFixed(2)}`;
+  };
+
   const formatLogDetails = (log) => {
     const details = log.details || {};
 
@@ -496,6 +593,10 @@ function Products() {
 
     if (log.action === "edited product listing") {
       return `Edited: ${details.productName || "Unknown product"}`;
+    }
+
+    if (log.action === "deleted product") {
+      return `Deleted: ${details.productName || "Unknown product"}`;
     }
 
     return "";
@@ -590,7 +691,8 @@ function Products() {
                     <th>SKU</th>
                     <th>Category</th>
                     <th>Supplier</th>
-                    <th>Price</th>
+                    <th>Price Range</th>
+                    <th>Batches</th>
                     <th>Stock</th>
                     <th>Status</th>
                     <th>Action</th>
@@ -600,7 +702,7 @@ function Products() {
                 <tbody>
                   {paginatedProducts.length === 0 && (
                     <tr>
-                      <td colSpan="8">No products found</td>
+                      <td colSpan="9">No products found</td>
                     </tr>
                   )}
 
@@ -610,10 +712,20 @@ function Products() {
                       <td>{product.sku || "-"}</td>
                       <td>{product.category_name || "-"}</td>
                       <td>{product.supplier_name || "-"}</td>
-                      <td>${Number(product.selling_price).toFixed(2)}</td>
+                      <td>
+                        <span className="batch-price-badge">
+                          {getPriceRangeText(product)}
+                        </span>
+                      </td>
+                      <td>
+                        <span className="badge neutral">
+                          {Number(product.batch_count || 0)} batch(es)
+                        </span>
+                      </td>
                       <td>{product.stock_quantity}</td>
                       <td>
-                        {product.stock_quantity <= product.low_stock_alert ? (
+                        {Number(product.stock_quantity || 0) <=
+                        Number(product.low_stock_alert || 0) ? (
                           <span className="badge danger">Low Stock</span>
                         ) : (
                           <span className="badge success">In Stock</span>
@@ -639,8 +751,18 @@ function Products() {
                             </button>
                           )}
 
+                          {hasPermission("products.delete") && (
+                            <button
+                              className="small-btn danger-table-btn"
+                              onClick={() => handleOpenDeleteProduct(product)}
+                            >
+                              Delete
+                            </button>
+                          )}
+
                           {!hasPermission("products.edit") &&
-                            !hasPermission("products.listing.edit") && (
+                            !hasPermission("products.listing.edit") &&
+                            !hasPermission("products.delete") && (
                               <span className="muted-action-text">
                                 No actions
                               </span>
@@ -696,6 +818,7 @@ function Products() {
               const isStockUpdate = log.action === "updated stock";
               const isProductCreate = log.action === "created product";
               const isProductEdit = log.action === "edited product listing";
+              const isProductDelete = log.action === "deleted product";
 
               return (
                 <div className="log-item" key={log.id}>
@@ -769,12 +892,29 @@ function Products() {
                       </>
                     )}
 
-                    {!isStockUpdate && !isProductCreate && !isProductEdit && (
+                    {isProductDelete && (
                       <>
-                        <span className="log-badge neutral">{log.action}</span>
-                        <p>{formatLogDetails(log)}</p>
+                        <span className="log-badge warning">
+                          Product Deleted
+                        </span>
+                        <p>
+                          Deleted{" "}
+                          <strong>{details.productName || "product"}</strong>
+                        </p>
                       </>
                     )}
+
+                    {!isStockUpdate &&
+                      !isProductCreate &&
+                      !isProductEdit &&
+                      !isProductDelete && (
+                        <>
+                          <span className="log-badge neutral">
+                            {log.action}
+                          </span>
+                          <p>{formatLogDetails(log)}</p>
+                        </>
+                      )}
                   </div>
 
                   <div className="log-time">
@@ -810,6 +950,8 @@ function Products() {
             </div>
 
             <form className="product-form" onSubmit={handleProductReview}>
+              {modalError && <div className="modal-error">{modalError}</div>}
+
               <label>Product Name *</label>
               <input
                 name="name"
@@ -895,6 +1037,7 @@ function Products() {
                   <input
                     name="buyingPrice"
                     type="number"
+                    step="0.01"
                     value={form.buyingPrice}
                     onChange={handleChange}
                     placeholder="0.00"
@@ -906,6 +1049,7 @@ function Products() {
                   <input
                     name="sellingPrice"
                     type="number"
+                    step="0.01"
                     value={form.sellingPrice}
                     onChange={handleChange}
                     placeholder="0.00"
@@ -913,6 +1057,13 @@ function Products() {
                   />
                 </div>
               </div>
+
+              {!editMode && (
+                <div className="batch-info-box">
+                  Initial stock will create the first stock batch using this
+                  buying price and selling price.
+                </div>
+              )}
 
               <div className="form-row">
                 {!editMode && (
@@ -1001,7 +1152,7 @@ function Products() {
 
                 {!editMode && (
                   <div>
-                    <span>Stock Quantity</span>
+                    <span>Initial Batch Stock</span>
                     <strong>{Number(form.stockQuantity || 0)}</strong>
                   </div>
                 )}
@@ -1056,13 +1207,17 @@ function Products() {
             </div>
 
             <form className="product-form" onSubmit={handleStockReview}>
+              {stockModalError && (
+                <div className="modal-error">{stockModalError}</div>
+              )}
+
               <label>Movement Type</label>
               <select
                 name="movementType"
                 value={stockForm.movementType}
                 onChange={handleStockChange}
               >
-                <option value="increase">Increase Stock</option>
+                <option value="increase">Increase Stock / New Batch</option>
                 <option value="decrease">Decrease Stock</option>
                 <option value="set">Set Stock Quantity</option>
               </select>
@@ -1076,6 +1231,72 @@ function Products() {
                 placeholder="Enter quantity"
                 required
               />
+
+              {(stockForm.movementType === "increase" ||
+                stockForm.movementType === "set") && (
+                <>
+                  <div className="form-row">
+                    <div>
+                      <label>Buying Price</label>
+                      <input
+                        name="buyingPrice"
+                        type="number"
+                        step="0.01"
+                        value={stockForm.buyingPrice}
+                        onChange={handleStockChange}
+                        placeholder="0.00"
+                      />
+                    </div>
+
+                    <div>
+                      <label>Selling Price *</label>
+                      <input
+                        name="sellingPrice"
+                        type="number"
+                        step="0.01"
+                        value={stockForm.sellingPrice}
+                        onChange={handleStockChange}
+                        placeholder="0.00"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <SearchableSelect
+                    label="Supplier"
+                    value={stockForm.supplierId}
+                    onChange={(value) =>
+                      setStockForm({
+                        ...stockForm,
+                        supplierId: value,
+                      })
+                    }
+                    placeholder="No supplier"
+                    searchPlaceholder="Search suppliers..."
+                    options={[
+                      { value: "", label: "No supplier" },
+                      ...suppliers.map((supplier) => ({
+                        value: supplier.id,
+                        label: supplier.name,
+                      })),
+                    ]}
+                  />
+
+                  <label>Batch Note</label>
+                  <input
+                    name="batchNote"
+                    value={stockForm.batchNote}
+                    onChange={handleStockChange}
+                    placeholder="Example: New supplier stock with higher selling price"
+                  />
+
+                  <div className="batch-info-box">
+                    This will create a stock batch with its own selling price.
+                    Sales will use the highest selling price batch first unless
+                    the cashier selects a specific batch.
+                  </div>
+                </>
+              )}
 
               <label>Reason</label>
               <textarea
@@ -1148,6 +1369,35 @@ function Products() {
                   <strong>{getStockAfterUpdate()}</strong>
                 </div>
 
+                {(stockForm.movementType === "increase" ||
+                  stockForm.movementType === "set") && (
+                  <>
+                    <div>
+                      <span>Buying Price</span>
+                      <strong>
+                        ${Number(stockForm.buyingPrice || 0).toFixed(2)}
+                      </strong>
+                    </div>
+
+                    <div>
+                      <span>Selling Price</span>
+                      <strong>
+                        ${Number(stockForm.sellingPrice || 0).toFixed(2)}
+                      </strong>
+                    </div>
+
+                    <div>
+                      <span>Supplier</span>
+                      <strong>{getStockFormSupplierName()}</strong>
+                    </div>
+
+                    <div>
+                      <span>Batch Note</span>
+                      <strong>{stockForm.batchNote || "-"}</strong>
+                    </div>
+                  </>
+                )}
+
                 <div className="review-full">
                   <span>Reason</span>
                   <strong>{stockForm.reason || "-"}</strong>
@@ -1173,6 +1423,59 @@ function Products() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {deleteProduct && (
+        <div className="modal-overlay">
+          <div className="confirm-modal">
+            <div className="modal-header">
+              <div>
+                <h3>Delete Product</h3>
+                <p>This product will be removed from active product lists.</p>
+              </div>
+
+              <button
+                className="modal-close-btn"
+                onClick={() => setDeleteProduct(null)}
+              >
+                ×
+              </button>
+            </div>
+
+            {deleteModalError && (
+              <div className="modal-error">{deleteModalError}</div>
+            )}
+
+            <div className="confirm-user-box">
+              <span>Product</span>
+              <strong>{deleteProduct.name}</strong>
+              <small>SKU: {deleteProduct.sku || "No SKU"}</small>
+            </div>
+
+            <div className="pending-remark-box danger-remark">
+              This is a soft delete. Old sales and reports will still keep this
+              product history.
+            </div>
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={() => setDeleteProduct(null)}
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                className="primary-btn danger-confirm-btn"
+                onClick={handleConfirmDeleteProduct}
+              >
+                Delete Product
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
