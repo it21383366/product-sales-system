@@ -6,6 +6,7 @@ import Logs from "./pages/Logs";
 import Sales from "./pages/Sales";
 import Users from "./pages/Users";
 import Settings from "./pages/Settings";
+import Suppliers from "./pages/Suppliers";
 import "./App.css";
 
 const API_URL = import.meta.env.VITE_API_URL;
@@ -313,12 +314,7 @@ function App() {
 
           {activePage === "products" && <Products />}
 
-          {activePage === "suppliers" && (
-            <section className="panel">
-              <h2>Suppliers</h2>
-              <p>Suppliers page coming next.</p>
-            </section>
-          )}
+          {activePage === "suppliers" && <Suppliers />}
 
           {activePage === "sales" && <Sales />}
 

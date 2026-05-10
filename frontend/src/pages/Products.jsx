@@ -1134,7 +1134,6 @@ function Products() {
             {categoryError && <div className="modal-error">{categoryError}</div>}
 
             <form className="product-form" onSubmit={handleSaveCategory}>
-              <label>Select Existing Category</label>
               <SearchableSelect
                 label="Select Existing Category"
                 value={categoryForm.id}
