@@ -29,6 +29,7 @@ function Sales() {
 
   const [showCompleteModal, setShowCompleteModal] = useState(false);
   const [selectedPendingSale, setSelectedPendingSale] = useState(null);
+  const [completeModalError, setCompleteModalError] = useState("");
   const [completeForm, setCompleteForm] = useState({
     paymentMethod: "cash",
     cashAmount: "",
@@ -37,6 +38,7 @@ function Sales() {
 
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
+  const [cancelModalError, setCancelModalError] = useState("");
 
   const [form, setForm] = useState({
     saleStatus: defaultSaleStatus,
@@ -335,6 +337,7 @@ function Sales() {
 
   const openCompletePending = (sale) => {
     setSelectedPendingSale(sale);
+    setCompleteModalError("");
     setCompleteForm({
       paymentMethod: "cash",
       cashAmount: "",
@@ -347,6 +350,7 @@ function Sales() {
 
   const closeCompletePending = () => {
     setSelectedPendingSale(null);
+    setCompleteModalError("");
     setCompleteForm({
       paymentMethod: "cash",
       cashAmount: "",
@@ -357,6 +361,8 @@ function Sales() {
 
   const submitCompletePending = async () => {
     try {
+      setCompleteModalError("");
+
       if (!selectedPendingSale) {
         return;
       }
@@ -369,7 +375,9 @@ function Sales() {
           Number(completeForm.cardAmount || 0);
 
         if (Number(paidTotal.toFixed(2)) !== Number(balance.toFixed(2))) {
-          setError("Cash amount + card amount must match the balance amount");
+          setCompleteModalError(
+            "Cash amount + card amount must match the balance amount"
+          );
           return;
         }
       }
@@ -389,13 +397,16 @@ function Sales() {
       await fetchProducts();
       await printExistingSale(saleId);
     } catch (err) {
-      setError(err.response?.data?.message || "Failed to complete pending sale");
+      setCompleteModalError(
+        err.response?.data?.message || "Failed to complete pending sale"
+      );
     }
   };
 
   const openCancelPending = (sale) => {
     setSelectedPendingSale(sale);
     setCancelReason("");
+    setCancelModalError("");
     setShowCancelModal(true);
     setError("");
     setMessage("");
@@ -404,17 +415,20 @@ function Sales() {
   const closeCancelPending = () => {
     setSelectedPendingSale(null);
     setCancelReason("");
+    setCancelModalError("");
     setShowCancelModal(false);
   };
 
   const submitCancelPending = async () => {
     try {
+      setCancelModalError("");
+
       if (!selectedPendingSale) {
         return;
       }
 
       if (!cancelReason.trim()) {
-        setError("Cancel reason is required");
+        setCancelModalError("Cancel reason is required");
         return;
       }
 
@@ -428,7 +442,9 @@ function Sales() {
       await fetchSales();
       await fetchProducts();
     } catch (err) {
-      setError(err.response?.data?.message || "Failed to cancel pending sale");
+      setCancelModalError(
+        err.response?.data?.message || "Failed to cancel pending sale"
+      );
     }
   };
 
@@ -1172,16 +1188,21 @@ function Sales() {
             </div>
 
             <div className="product-form">
+              {completeModalError && (
+                <div className="modal-error">{completeModalError}</div>
+              )}
+
               <label>Balance Payment Method</label>
               <select
                 value={completeForm.paymentMethod}
-                onChange={(e) =>
+                onChange={(e) => {
+                  setCompleteModalError("");
                   setCompleteForm({
                     paymentMethod: e.target.value,
                     cashAmount: "",
                     cardAmount: "",
-                  })
-                }
+                  });
+                }}
               >
                 <option value="cash">Cash</option>
                 <option value="card">Card</option>
@@ -1196,12 +1217,13 @@ function Sales() {
                       type="number"
                       value={completeForm.cashAmount}
                       placeholder="0.00"
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        setCompleteModalError("");
                         setCompleteForm({
                           ...completeForm,
                           cashAmount: e.target.value,
-                        })
-                      }
+                        });
+                      }}
                     />
                   </div>
 
@@ -1211,12 +1233,13 @@ function Sales() {
                       type="number"
                       value={completeForm.cardAmount}
                       placeholder="0.00"
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        setCompleteModalError("");
                         setCompleteForm({
                           ...completeForm,
                           cardAmount: e.target.value,
-                        })
-                      }
+                        });
+                      }}
                     />
                   </div>
                 </div>
@@ -1259,11 +1282,18 @@ function Sales() {
             </div>
 
             <div className="product-form">
+              {cancelModalError && (
+                <div className="modal-error">{cancelModalError}</div>
+              )}
+
               <label>Cancel Reason *</label>
               <textarea
                 value={cancelReason}
                 placeholder="Reason for cancelling this pending sale"
-                onChange={(e) => setCancelReason(e.target.value)}
+                onChange={(e) => {
+                  setCancelReason(e.target.value);
+                  setCancelModalError("");
+                }}
                 required
               />
             </div>
