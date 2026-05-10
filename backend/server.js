@@ -1517,10 +1517,39 @@ app.post(
         ]
       );
 
+      const supplier = result.rows[0];
+
+      await pool.query(
+        `
+        INSERT INTO audit_logs (
+          organisation_id,
+          user_id,
+          action,
+          table_name,
+          record_id,
+          details
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          req.user.organisation_id,
+          req.user.id,
+          "created supplier",
+          "suppliers",
+          supplier.id,
+          JSON.stringify({
+            supplierName: supplier.name,
+            contactPerson: supplier.contact_person,
+            phone: supplier.phone,
+            email: supplier.email,
+          }),
+        ]
+      );
+
       res.status(201).json({
         status: "success",
         message: "Supplier created successfully",
-        supplier: result.rows[0],
+        supplier,
       });
     } catch (error) {
       console.error("Create supplier error:", error.message);
@@ -1542,7 +1571,8 @@ app.patch(
   async (req, res) => {
     try {
       const { id } = req.params;
-      const { name, contactPerson, phone, email, address, notes, isActive } = req.body;
+      const { name, contactPerson, phone, email, address, notes, isActive } =
+        req.body;
 
       const result = await pool.query(
         `
@@ -1579,10 +1609,39 @@ app.patch(
         });
       }
 
+      const supplier = result.rows[0];
+
+      await pool.query(
+        `
+        INSERT INTO audit_logs (
+          organisation_id,
+          user_id,
+          action,
+          table_name,
+          record_id,
+          details
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          req.user.organisation_id,
+          req.user.id,
+          "edited supplier",
+          "suppliers",
+          id,
+          JSON.stringify({
+            supplierName: supplier.name,
+            contactPerson: supplier.contact_person,
+            phone: supplier.phone,
+            email: supplier.email,
+          }),
+        ]
+      );
+
       res.json({
         status: "success",
         message: "Supplier updated successfully",
-        supplier: result.rows[0],
+        supplier,
       });
     } catch (error) {
       console.error("Update supplier error:", error.message);
@@ -1605,6 +1664,24 @@ app.delete(
     try {
       const { id } = req.params;
 
+      const usedCheck = await pool.query(
+        `
+        SELECT COUNT(*) AS count
+        FROM products
+        WHERE supplier_id = $1
+        AND organisation_id = $2
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (Number(usedCheck.rows[0].count) > 0) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "This supplier is currently linked to products. Change or remove those products before deleting this supplier.",
+        });
+      }
+
       const result = await pool.query(
         `
         DELETE FROM suppliers
@@ -1621,10 +1698,39 @@ app.delete(
         });
       }
 
+      const supplier = result.rows[0];
+
+      await pool.query(
+        `
+        INSERT INTO audit_logs (
+          organisation_id,
+          user_id,
+          action,
+          table_name,
+          record_id,
+          details
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          req.user.organisation_id,
+          req.user.id,
+          "deleted supplier",
+          "suppliers",
+          id,
+          JSON.stringify({
+            supplierName: supplier.name,
+            contactPerson: supplier.contact_person,
+            phone: supplier.phone,
+            email: supplier.email,
+          }),
+        ]
+      );
+
       res.json({
         status: "success",
         message: "Supplier deleted successfully",
-        supplier: result.rows[0],
+        supplier,
       });
     } catch (error) {
       console.error("Delete supplier error:", error.message);
@@ -1632,6 +1738,70 @@ app.delete(
       res.status(500).json({
         status: "error",
         message: "Failed to delete supplier",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get products supplied by one supplier
+app.get(
+  "/api/suppliers/:id/products",
+  authMiddleware,
+  requirePermission("suppliers.view"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const supplierCheck = await pool.query(
+        `
+        SELECT id, name
+        FROM suppliers
+        WHERE id = $1
+        AND organisation_id = $2
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (supplierCheck.rows.length === 0) {
+        return res.status(404).json({
+          status: "error",
+          message: "Supplier not found",
+        });
+      }
+
+      const productsResult = await pool.query(
+        `
+        SELECT
+          products.id,
+          products.name,
+          products.sku,
+          products.barcode,
+          products.selling_price,
+          products.stock_quantity,
+          products.low_stock_alert,
+          categories.name AS category_name
+        FROM products
+        LEFT JOIN categories ON products.category_id = categories.id
+        WHERE products.supplier_id = $1
+        AND products.organisation_id = $2
+        AND products.is_active = true
+        ORDER BY products.name ASC
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      res.json({
+        status: "success",
+        supplier: supplierCheck.rows[0],
+        products: productsResult.rows,
+      });
+    } catch (error) {
+      console.error("Get supplier products error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get supplier products",
         error: error.message,
       });
     }

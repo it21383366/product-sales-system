@@ -8,9 +8,11 @@ function Products() {
   const [products, setProducts] = useState([]);
   const [logs, setLogs] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
 
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("");
+  const [selectedSupplier, setSelectedSupplier] = useState("");
 
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -46,6 +48,7 @@ function Products() {
     stockQuantity: "",
     lowStockAlert: "5",
     categoryId: "",
+    supplierId: "",
   });
 
   const [stockForm, setStockForm] = useState({
@@ -75,9 +78,19 @@ function Products() {
     }
   };
 
+  const fetchSuppliers = async () => {
+    try {
+      const response = await api.get("/api/suppliers");
+      setSuppliers(response.data.suppliers);
+    } catch (err) {
+      console.error("Failed to load suppliers", err);
+    }
+  };
+
   const fetchProducts = async (
     searchValue = search,
-    categoryValue = selectedCategory
+    categoryValue = selectedCategory,
+    supplierValue = selectedSupplier
   ) => {
     try {
       setError("");
@@ -86,6 +99,7 @@ function Products() {
         params: {
           search: searchValue || undefined,
           categoryId: categoryValue || undefined,
+          supplierId: supplierValue || undefined,
         },
       });
 
@@ -113,18 +127,19 @@ function Products() {
   };
 
   useEffect(() => {
-    fetchProducts("", "");
+    fetchProducts("", "", "");
     fetchLogs();
     fetchCategories();
+    fetchSuppliers();
   }, []);
 
   useEffect(() => {
     const delaySearch = setTimeout(() => {
-      fetchProducts(search, selectedCategory);
+      fetchProducts(search, selectedCategory, selectedSupplier);
     }, 300);
 
     return () => clearTimeout(delaySearch);
-  }, [search, selectedCategory]);
+  }, [search, selectedCategory, selectedSupplier]);
 
   const resetProductForm = () => {
     setForm({
@@ -137,6 +152,7 @@ function Products() {
       stockQuantity: "",
       lowStockAlert: "5",
       categoryId: "",
+      supplierId: "",
     });
   };
 
@@ -244,7 +260,7 @@ function Products() {
       }
 
       await fetchCategories();
-      await fetchProducts(search, selectedCategory);
+      await fetchProducts(search, selectedCategory, selectedSupplier);
 
       setCategoryForm({
         id: "",
@@ -283,7 +299,7 @@ function Products() {
       });
 
       await fetchCategories();
-      await fetchProducts(search, "");
+      await fetchProducts(search, "", selectedSupplier);
     } catch (err) {
       setCategoryError(
         err.response?.data?.message || "Failed to delete category"
@@ -317,6 +333,7 @@ function Products() {
       stockQuantity: product.stock_quantity || "",
       lowStockAlert: product.low_stock_alert || "5",
       categoryId: product.category_id || "",
+      supplierId: product.supplier_id || "",
     });
 
     setShowProductModal(true);
@@ -391,6 +408,7 @@ function Products() {
         sellingPrice: Number(form.sellingPrice),
         lowStockAlert: Number(form.lowStockAlert || 5),
         categoryId: form.categoryId || null,
+        supplierId: form.supplierId || null,
       };
 
       if (editMode) {
@@ -407,7 +425,7 @@ function Products() {
 
       closeProductModals();
       resetProductForm();
-      fetchProducts(search, selectedCategory);
+      fetchProducts(search, selectedCategory, selectedSupplier);
       fetchLogs();
     } catch (err) {
       setError(err.response?.data?.message || "Failed to save product");
@@ -428,7 +446,7 @@ function Products() {
 
       setMessage("Stock updated successfully");
       closeStockModals();
-      fetchProducts(search, selectedCategory);
+      fetchProducts(search, selectedCategory, selectedSupplier);
       fetchLogs();
     } catch (err) {
       setError(err.response?.data?.message || "Failed to update stock");
@@ -456,6 +474,11 @@ function Products() {
   const getSelectedCategoryName = () => {
     const category = categories.find((item) => item.id === form.categoryId);
     return category?.name || "No category";
+  };
+
+  const getSelectedSupplierName = () => {
+    const supplier = suppliers.find((item) => item.id === form.supplierId);
+    return supplier?.name || "No supplier";
   };
 
   const formatLogDetails = (log) => {
@@ -499,6 +522,20 @@ function Products() {
                   ...categories.map((category) => ({
                     value: category.id,
                     label: category.name,
+                  })),
+                ]}
+              />
+
+              <SearchableSelect
+                value={selectedSupplier}
+                onChange={setSelectedSupplier}
+                placeholder="All Suppliers"
+                searchPlaceholder="Search suppliers..."
+                options={[
+                  { value: "", label: "All Suppliers" },
+                  ...suppliers.map((supplier) => ({
+                    value: supplier.id,
+                    label: supplier.name,
                   })),
                 ]}
               />
@@ -552,6 +589,7 @@ function Products() {
                     <th>Name</th>
                     <th>SKU</th>
                     <th>Category</th>
+                    <th>Supplier</th>
                     <th>Price</th>
                     <th>Stock</th>
                     <th>Status</th>
@@ -562,7 +600,7 @@ function Products() {
                 <tbody>
                   {paginatedProducts.length === 0 && (
                     <tr>
-                      <td colSpan="7">No products found</td>
+                      <td colSpan="8">No products found</td>
                     </tr>
                   )}
 
@@ -571,6 +609,7 @@ function Products() {
                       <td>{product.name}</td>
                       <td>{product.sku || "-"}</td>
                       <td>{product.category_name || "-"}</td>
+                      <td>{product.supplier_name || "-"}</td>
                       <td>${Number(product.selling_price).toFixed(2)}</td>
                       <td>{product.stock_quantity}</td>
                       <td>
@@ -802,7 +841,6 @@ function Products() {
                 </div>
               </div>
 
-              <label>Category</label>
               <SearchableSelect
                 label="Category"
                 value={form.categoryId}
@@ -819,6 +857,26 @@ function Products() {
                   ...categories.map((category) => ({
                     value: category.id,
                     label: category.name,
+                  })),
+                ]}
+              />
+
+              <SearchableSelect
+                label="Supplier"
+                value={form.supplierId}
+                onChange={(value) =>
+                  setForm({
+                    ...form,
+                    supplierId: value,
+                  })
+                }
+                placeholder="No supplier"
+                searchPlaceholder="Search suppliers..."
+                options={[
+                  { value: "", label: "No supplier" },
+                  ...suppliers.map((supplier) => ({
+                    value: supplier.id,
+                    label: supplier.name,
                   })),
                 ]}
               />
@@ -924,6 +982,11 @@ function Products() {
                 <div>
                   <span>Category</span>
                   <strong>{getSelectedCategoryName()}</strong>
+                </div>
+
+                <div>
+                  <span>Supplier</span>
+                  <strong>{getSelectedSupplierName()}</strong>
                 </div>
 
                 <div>

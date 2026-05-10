@@ -1970,3 +1970,29 @@ th {
   width: 100%;
 }
 
+.table-link-btn {
+  border: none;
+  background: transparent;
+  color: #bfdbfe;
+  font-weight: 800;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.table-link-btn:hover {
+  color: #60a5fa;
+  text-decoration: underline;
+}
+
+.supplier-products-modal {
+  width: 100%;
+  max-width: 900px;
+  max-height: 90vh;
+  overflow-y: auto;
+  background: #172033;
+  border: 1px solid var(--border-light);
+  border-radius: 18px;
+  padding: 24px;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.45);
+}

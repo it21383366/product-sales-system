@@ -16,6 +16,11 @@ function Suppliers() {
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
 
+  const [showSupplierProductsModal, setShowSupplierProductsModal] =
+    useState(false);
+  const [supplierProducts, setSupplierProducts] = useState([]);
+  const [supplierProductsTitle, setSupplierProductsTitle] = useState("");
+
   const [editMode, setEditMode] = useState(false);
   const [editingSupplierId, setEditingSupplierId] = useState(null);
   const [selectedSupplier, setSelectedSupplier] = useState(null);
@@ -46,7 +51,8 @@ function Suppliers() {
     });
   }, [suppliers, search]);
 
-  const totalPages = Math.ceil(filteredSuppliers.length / SUPPLIERS_PER_PAGE) || 1;
+  const totalPages =
+    Math.ceil(filteredSuppliers.length / SUPPLIERS_PER_PAGE) || 1;
 
   const paginatedSuppliers = useMemo(() => {
     const start = (page - 1) * SUPPLIERS_PER_PAGE;
@@ -129,6 +135,26 @@ function Suppliers() {
   const closeDeleteConfirm = () => {
     setSelectedSupplier(null);
     setShowConfirmModal(false);
+  };
+
+  const openSupplierProducts = async (supplier) => {
+    try {
+      setError("");
+
+      const response = await api.get(`/api/suppliers/${supplier.id}/products`);
+
+      setSupplierProducts(response.data.products || []);
+      setSupplierProductsTitle(response.data.supplier?.name || supplier.name);
+      setShowSupplierProductsModal(true);
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to load supplier products");
+    }
+  };
+
+  const closeSupplierProducts = () => {
+    setShowSupplierProductsModal(false);
+    setSupplierProducts([]);
+    setSupplierProductsTitle("");
   };
 
   const handleChange = (e) => {
@@ -230,7 +256,10 @@ function Suppliers() {
           </div>
 
           {hasPermission("suppliers.create") && (
-            <button className="primary-btn add-product-btn" onClick={openAddSupplier}>
+            <button
+              className="primary-btn add-product-btn"
+              onClick={openAddSupplier}
+            >
               + Add Supplier
             </button>
           )}
@@ -258,7 +287,15 @@ function Suppliers() {
 
               {paginatedSuppliers.map((supplier) => (
                 <tr key={supplier.id}>
-                  <td>{supplier.name}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="table-link-btn"
+                      onClick={() => openSupplierProducts(supplier)}
+                    >
+                      {supplier.name}
+                    </button>
+                  </td>
                   <td>{supplier.contact_person || "-"}</td>
                   <td>{supplier.email || "-"}</td>
                   <td>{supplier.phone || "-"}</td>
@@ -309,8 +346,7 @@ function Suppliers() {
             {filteredSuppliers.length === 0
               ? 0
               : (page - 1) * SUPPLIERS_PER_PAGE + 1}
-            -
-            {Math.min(page * SUPPLIERS_PER_PAGE, filteredSuppliers.length)} of{" "}
+            -{Math.min(page * SUPPLIERS_PER_PAGE, filteredSuppliers.length)} of{" "}
             {filteredSuppliers.length}
           </span>
 
@@ -326,7 +362,11 @@ function Suppliers() {
 
       {showSupplierModal && (
         <div className="modal-overlay">
-          <div className={`product-modal ${showReviewModal ? "modal-blurred" : ""}`}>
+          <div
+            className={`product-modal ${
+              showReviewModal ? "modal-blurred" : ""
+            }`}
+          >
             <div className="modal-header">
               <div>
                 <h3>{editMode ? "Edit Supplier" : "Add Supplier"}</h3>
@@ -411,7 +451,9 @@ function Suppliers() {
 
           {showReviewModal && (
             <div className="review-modal">
-              <h3>{editMode ? "Confirm Supplier Update" : "Confirm Supplier"}</h3>
+              <h3>
+                {editMode ? "Confirm Supplier Update" : "Confirm Supplier"}
+              </h3>
               <p>Please verify the supplier details before saving.</p>
 
               <div className="review-grid">
@@ -450,7 +492,11 @@ function Suppliers() {
                   Edit
                 </button>
 
-                <button type="button" className="primary-btn" onClick={handleSaveSupplier}>
+                <button
+                  type="button"
+                  className="primary-btn"
+                  onClick={handleSaveSupplier}
+                >
                   {editMode ? "Confirm & Update" : "Confirm & Save"}
                 </button>
               </div>
@@ -497,6 +543,73 @@ function Suppliers() {
                 onClick={handleDeleteSupplier}
               >
                 Delete Supplier
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSupplierProductsModal && (
+        <div className="modal-overlay">
+          <div className="supplier-products-modal">
+            <div className="modal-header">
+              <div>
+                <h3>{supplierProductsTitle}</h3>
+                <p>Products supplied by this supplier with current stock.</p>
+              </div>
+
+              <button className="modal-close-btn" onClick={closeSupplierProducts}>
+                ×
+              </button>
+            </div>
+
+            <div className="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Product</th>
+                    <th>SKU</th>
+                    <th>Category</th>
+                    <th>Price</th>
+                    <th>Current Stock</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {supplierProducts.length === 0 && (
+                    <tr>
+                      <td colSpan="6">No products linked to this supplier</td>
+                    </tr>
+                  )}
+
+                  {supplierProducts.map((product) => (
+                    <tr key={product.id}>
+                      <td>{product.name}</td>
+                      <td>{product.sku || "-"}</td>
+                      <td>{product.category_name || "-"}</td>
+                      <td>${Number(product.selling_price).toFixed(2)}</td>
+                      <td>{product.stock_quantity}</td>
+                      <td>
+                        {product.stock_quantity <= product.low_stock_alert ? (
+                          <span className="badge danger">Low Stock</span>
+                        ) : (
+                          <span className="badge success">In Stock</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={closeSupplierProducts}
+              >
+                Close
               </button>
             </div>
           </div>
