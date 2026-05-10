@@ -41,12 +41,44 @@ function Users() {
     return permissions.includes(permission);
   };
 
+  const getRoleLevel = (roleName) => {
+    const levels = {
+      Admin: 1,
+      Manager: 2,
+      Cashier: 3,
+      "Inventory Staff": 3,
+    };
+
+    return levels[roleName] || 99;
+  };
+
+  const roleOrder = {
+    Admin: 1,
+    Manager: 2,
+    Cashier: 3,
+    "Inventory Staff": 3,
+  };
+
+  const currentUserRole = savedUser.role;
+  const currentUserLevel = getRoleLevel(currentUserRole);
+
+  const sortedRoles = [...roles].sort((a, b) => {
+    return (roleOrder[a.name] || 99) - (roleOrder[b.name] || 99);
+  });
+
+  const assignableRoles = sortedRoles.filter((role) => {
+    if (currentUserRole === "Admin") return true;
+    return getRoleLevel(role.name) > currentUserLevel;
+  });
+
   const totalPages = Math.ceil(users.length / USERS_PER_PAGE) || 1;
 
   const paginatedUsers = useMemo(() => {
     const start = (page - 1) * USERS_PER_PAGE;
     return users.slice(start, start + USERS_PER_PAGE);
   }, [users, page]);
+
+  const selectedRole = roles.find((role) => role.id === form.roleId);
 
   const fetchUsers = async () => {
     try {
@@ -63,6 +95,17 @@ function Users() {
       setRoles(response.data.roles);
     } catch (err) {
       setError(err.response?.data?.message || "Failed to load roles");
+    }
+  };
+
+  const fetchAllPermissions = async () => {
+    try {
+      const response = await api.get("/api/permissions");
+      setAllPermissions(response.data.permissions);
+    } catch (err) {
+      setPrivilegeError(
+        err.response?.data?.message || "Failed to load permissions"
+      );
     }
   };
 
@@ -120,14 +163,27 @@ function Users() {
     setShowReviewModal(false);
   };
 
+  const openPrivilegeModal = async () => {
+    setPrivilegeError("");
+    setSelectedPrivilegeRoleId("");
+    setSelectedPermissions([]);
+    await fetchAllPermissions();
+    setShowPrivilegeModal(true);
+  };
+
+  const closePrivilegeModal = () => {
+    setShowPrivilegeModal(false);
+    setSelectedPrivilegeRoleId("");
+    setSelectedPermissions([]);
+    setPrivilegeError("");
+  };
+
   const handleChange = (e) => {
     setForm({
       ...form,
       [e.target.name]: e.target.value,
     });
   };
-
-  const selectedRole = roles.find((role) => role.id === form.roleId);
 
   const handleReview = (e) => {
     e.preventDefault();
@@ -256,31 +312,7 @@ function Users() {
     }
   };
 
-  const fetchAllPermissions = async () => {
-    try {
-        const response = await api.get("/api/permissions");
-        setAllPermissions(response.data.permissions);
-    } catch (err) {
-        setPrivilegeError(err.response?.data?.message || "Failed to load permissions");
-    }
-    };
-
-    const openPrivilegeModal = async () => {
-    setPrivilegeError("");
-    setSelectedPrivilegeRoleId("");
-    setSelectedPermissions([]);
-    await fetchAllPermissions();
-    setShowPrivilegeModal(true);
-    };
-
-    const closePrivilegeModal = () => {
-    setShowPrivilegeModal(false);
-    setSelectedPrivilegeRoleId("");
-    setSelectedPermissions([]);
-    setPrivilegeError("");
-    };
-
-    const handlePrivilegeRoleChange = async (roleId) => {
+  const handlePrivilegeRoleChange = async (roleId) => {
     setSelectedPrivilegeRoleId(roleId);
     setSelectedPermissions([]);
     setPrivilegeError("");
@@ -288,76 +320,46 @@ function Users() {
     if (!roleId) return;
 
     try {
-        const response = await api.get(`/api/roles/${roleId}/permissions`);
-        setSelectedPermissions(response.data.permissions);
+      const response = await api.get(`/api/roles/${roleId}/permissions`);
+      setSelectedPermissions(response.data.permissions || []);
     } catch (err) {
-        setPrivilegeError(
+      setPrivilegeError(
         err.response?.data?.message || "Failed to load role permissions"
-        );
+      );
     }
-    };
+  };
 
-    const getRoleLevel = (roleName) => {
-        const levels = {
-            Admin: 1,
-            Manager: 2,
-            Cashier: 3,
-            "Inventory Staff": 3,
-        };
-
-        return levels[roleName] || 99;
-        };
-
-        const roleOrder = {
-        Admin: 1,
-        Manager: 2,
-        Cashier: 3,
-        "Inventory Staff": 3,
-        };
-
-        const currentUserRole = savedUser.role;
-        const currentUserLevel = getRoleLevel(currentUserRole);
-
-        const sortedRoles = [...roles].sort((a, b) => {
-        return (roleOrder[a.name] || 99) - (roleOrder[b.name] || 99);
-        });
-
-        const assignableRoles = sortedRoles.filter((role) => {
-        if (currentUserRole === "Admin") return true;
-        return getRoleLevel(role.name) > currentUserLevel;
-        });
-
-    const togglePermission = (permissionCode) => {
+  const togglePermission = (permissionCode) => {
     if (selectedPermissions.includes(permissionCode)) {
-        setSelectedPermissions(
+      setSelectedPermissions(
         selectedPermissions.filter((code) => code !== permissionCode)
-        );
+      );
     } else {
-        setSelectedPermissions([...selectedPermissions, permissionCode]);
+      setSelectedPermissions([...selectedPermissions, permissionCode]);
     }
-    };
+  };
 
-    const saveRolePrivileges = async () => {
+  const saveRolePrivileges = async () => {
     try {
-        setPrivilegeError("");
+      setPrivilegeError("");
 
-        if (!selectedPrivilegeRoleId) {
+      if (!selectedPrivilegeRoleId) {
         setPrivilegeError("Please select a role");
         return;
-        }
+      }
 
-        await api.patch(`/api/roles/${selectedPrivilegeRoleId}/permissions`, {
+      await api.patch(`/api/roles/${selectedPrivilegeRoleId}/permissions`, {
         permissions: selectedPermissions,
-        });
+      });
 
-        setMessage("Role privileges updated successfully");
-        closePrivilegeModal();
+      setMessage("Role privileges updated successfully");
+      closePrivilegeModal();
     } catch (err) {
-        setPrivilegeError(
+      setPrivilegeError(
         err.response?.data?.message || "Failed to update role privileges"
-        );
+      );
     }
-    };
+  };
 
   return (
     <div className="users-page">
@@ -382,15 +384,15 @@ function Users() {
 
           <div className="table-header-actions">
             {hasPermission("roles.manage") && (
-                <button className="secondary-btn" onClick={openPrivilegeModal}>
+              <button className="secondary-btn" onClick={openPrivilegeModal}>
                 User Privilege Settings
-                </button>
+              </button>
             )}
 
             {hasPermission("users.create") && (
-                <button className="primary-btn add-product-btn" onClick={openAddUser}>
+              <button className="primary-btn add-product-btn" onClick={openAddUser}>
                 + Add User
-                </button>
+              </button>
             )}
           </div>
         </div>
@@ -561,14 +563,18 @@ function Users() {
                 onChange={handleChange}
               />
 
-              <label>Role *</label>
               <SearchableSelect
-                label="Select User Role"
-                value={selectedPrivilegeRoleId}
-                onChange={handlePrivilegeRoleChange}
+                label="Role *"
+                value={form.roleId}
+                onChange={(value) =>
+                  setForm({
+                    ...form,
+                    roleId: value,
+                  })
+                }
                 placeholder="Select role"
                 searchPlaceholder="Search roles..."
-                options={sortedRoles.map((role) => ({
+                options={assignableRoles.map((role) => ({
                   value: role.id,
                   label: role.name,
                 }))}
@@ -691,81 +697,76 @@ function Users() {
           </div>
         </div>
       )}
+
       {showPrivilegeModal && (
         <div className="modal-overlay">
-            <div className="privilege-modal">
+          <div className="privilege-modal">
             <div className="modal-header">
-                <div>
+              <div>
                 <h3>User Privilege Settings</h3>
                 <p>Select a role and choose the permissions allowed for that role.</p>
-                </div>
+              </div>
 
-                <button className="modal-close-btn" onClick={closePrivilegeModal}>
+              <button className="modal-close-btn" onClick={closePrivilegeModal}>
                 ×
-                </button>
+              </button>
             </div>
 
             {privilegeError && <div className="modal-error">{privilegeError}</div>}
 
             <div className="product-form">
-                <label>Select User Role</label>
-                <SearchableSelect
-                  label="Role *"
-                  value={form.roleId}
-                  onChange={(value) =>
-                    setForm({
-                      ...form,
-                      roleId: value,
-                    })
-                  }
-                  placeholder="Select role"
-                  searchPlaceholder="Search roles..."
-                  options={assignableRoles.map((role) => ({
-                    value: role.id,
-                    label: role.name,
-                  }))}
-                />
+              <SearchableSelect
+                label="Select User Role"
+                value={selectedPrivilegeRoleId}
+                onChange={handlePrivilegeRoleChange}
+                placeholder="Select role"
+                searchPlaceholder="Search roles..."
+                options={sortedRoles.map((role) => ({
+                  value: role.id,
+                  label: role.name,
+                }))}
+              />
 
-                {selectedPrivilegeRoleId && (
+              {selectedPrivilegeRoleId && (
                 <div className="permission-list">
-                    {allPermissions.map((permission) => (
+                  {allPermissions.map((permission) => (
                     <label className="permission-item" key={permission.code}>
-                        <input
+                      <input
                         type="checkbox"
                         checked={selectedPermissions.includes(permission.code)}
                         onChange={() => togglePermission(permission.code)}
-                        />
+                      />
 
-                        <div>
+                      <div>
                         <strong>{permission.code}</strong>
                         <span>{permission.name}</span>
-                        </div>
+                      </div>
                     </label>
-                    ))}
+                  ))}
                 </div>
-                )}
+              )}
 
-                <div className="modal-actions">
+              <div className="modal-actions">
                 <button
-                    type="button"
-                    className="secondary-btn"
-                    onClick={closePrivilegeModal}
+                  type="button"
+                  className="secondary-btn"
+                  onClick={closePrivilegeModal}
                 >
-                    Cancel
+                  Cancel
                 </button>
 
                 <button
-                    type="button"
-                    className="primary-btn"
-                    onClick={saveRolePrivileges}
+                  type="button"
+                  className="primary-btn"
+                  onClick={saveRolePrivileges}
                 >
-                    Save Privileges
+                  Save Privileges
                 </button>
-                </div>
+              </div>
             </div>
-            </div>
+          </div>
         </div>
-        )}
+      )}
     </div>
   );
 }
