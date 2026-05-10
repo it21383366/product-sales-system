@@ -7,37 +7,37 @@ const reportCards = [
     key: "sales",
     title: "Sales Report",
     permission: "reports.sales.view",
-    description: "Sales totals, status, payment methods, and sale history.",
+    description: "Sales totals, payment methods, sale status, returns, and reservations.",
   },
   {
     key: "products",
     title: "Product Report",
     permission: "reports.products.view",
-    description: "Product stock, category, supplier, and sales performance.",
+    description: "Product stock, category, supplier, sales quantity, and stock condition.",
   },
   {
     key: "stock",
     title: "Stock Movement Report",
     permission: "reports.stock.view",
-    description: "Stock increases, decreases, sales, refunds, damages, and reasons.",
+    description: "Clear explanation of stock increases, sales, refunds, reservations, and damages.",
   },
   {
     key: "suppliers",
     title: "Supplier Report",
     permission: "reports.suppliers.view",
-    description: "Supplier product counts, total stock, and low stock products.",
+    description: "Supplier product count, total stock, and low-stock supplier risk.",
   },
   {
     key: "activity",
     title: "User Activity Report",
     permission: "reports.users.view",
-    description: "Audit log activity by user, role, module, and action.",
+    description: "Readable audit log showing who did what and when.",
   },
   {
     key: "profit",
     title: "Profit Report",
     permission: "reports.profit.view",
-    description: "Estimated gross profit using buying price and selling price.",
+    description: "Estimated gross profit using selling value minus buying cost.",
   },
 ];
 
@@ -138,6 +138,348 @@ function Reports() {
     return new Date(value).toLocaleString();
   };
 
+  const labelText = (value) => {
+    if (!value) return "-";
+
+    return String(value)
+      .replaceAll("_", " ")
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+  };
+
+  const getSaleStatusLabel = (status, isEdited = false) => {
+    if (isEdited && status === "completed") return "Completed Sale - Edited";
+
+    const labels = {
+      completed: "Completed Sale",
+      pending: "Pending Sale / Stock Reserved",
+      cancelled: "Cancelled Pending Sale",
+      returned: "Fully Returned Sale",
+      partially_returned: "Partially Returned Sale",
+      refunded: "Refunded Sale",
+    };
+
+    return labels[status] || labelText(status);
+  };
+
+  const getPaymentLabel = (method) => {
+    const labels = {
+      cash: "Cash Payment",
+      card: "Card Payment",
+      split: "Split Payment",
+    };
+
+    return labels[method] || labelText(method);
+  };
+
+  const getSaleRemark = (sale) => {
+    const advance = Number(sale.advance_amount || 0);
+    const balance = Number(sale.balance_amount || 0);
+
+    if (sale.status === "pending") {
+      return `${money(advance)} paid as advance. ${money(
+        balance
+      )} still needs to be paid.`;
+    }
+
+    if (sale.status === "cancelled") {
+      if (advance > 0) {
+        return `Pending sale cancelled. ${money(
+          advance
+        )} advance should be returned to the customer.`;
+      }
+
+      return "Sale was cancelled.";
+    }
+
+    if (sale.status === "returned") {
+      return "All items in this sale have been returned/refunded.";
+    }
+
+    if (sale.status === "partially_returned") {
+      return "Some items in this sale have been returned/refunded.";
+    }
+
+    if (sale.is_edited) {
+      return "Sale was edited after completion.";
+    }
+
+    if (advance > 0 && sale.status === "completed") {
+      return `${money(advance)} was paid as advance. Balance has been completed.`;
+    }
+
+    return "Paid in full.";
+  };
+
+  const getStockConditionLabel = (product) => {
+    const stock = Number(product.stock_quantity || 0);
+    const alert = Number(product.low_stock_alert || 0);
+
+    if (stock <= 0) return "Out of Stock";
+    if (stock <= alert) return "Low Stock";
+    return "Available";
+  };
+
+  const getProductRemark = (product) => {
+    const stock = Number(product.stock_quantity || 0);
+    const alert = Number(product.low_stock_alert || 0);
+    const qtySold = Number(product.quantity_sold || 0);
+
+    if (stock <= 0) {
+      return "No sellable stock available.";
+    }
+
+    if (stock <= alert) {
+      return `Stock is at or below the alert level of ${alert}. Reorder may be needed.`;
+    }
+
+    if (qtySold > 0) {
+      return `${qtySold} item(s) sold from completed sales.`;
+    }
+
+    return "Product is in stock but no completed sales recorded in this report.";
+  };
+
+  const getMovementLabel = (type) => {
+    const labels = {
+      initial_stock: "Initial Stock Added",
+      increase: "Stock Increased",
+      decrease: "Stock Decreased",
+      set: "Stock Manually Adjusted",
+      sale: "Sold Item",
+      pending_sale: "Reserved for Pending Sale",
+      pending_cancel: "Pending Sale Cancelled",
+      refund_return: "Returned to Sellable Stock",
+      damage: "Damaged Stock Removed",
+    };
+
+    return labels[type] || labelText(type);
+  };
+
+  const getMovementDirection = (movement) => {
+    const qty = Number(movement.quantity || 0);
+
+    if (qty > 0) return "Stock In";
+    if (qty < 0) return "Stock Out";
+    return "No Stock Change";
+  };
+
+  const getMovementEffect = (movement) => {
+    const qty = Number(movement.quantity || 0);
+    const absQty = Math.abs(qty);
+
+    if (movement.movement_type === "initial_stock") {
+      return `${absQty} item(s) were added as opening stock.`;
+    }
+
+    if (movement.movement_type === "increase") {
+      return `${absQty} item(s) were added to sellable stock.`;
+    }
+
+    if (movement.movement_type === "decrease") {
+      return `${absQty} item(s) were removed from sellable stock.`;
+    }
+
+    if (movement.movement_type === "set") {
+      return `Stock was manually adjusted by ${qty} item(s).`;
+    }
+
+    if (movement.movement_type === "sale") {
+      return `${absQty} item(s) were sold and removed from stock.`;
+    }
+
+    if (movement.movement_type === "pending_sale") {
+      return `${absQty} item(s) were reserved for a pending sale.`;
+    }
+
+    if (movement.movement_type === "pending_cancel") {
+      return `${absQty} item(s) were returned because a pending sale was cancelled.`;
+    }
+
+    if (movement.movement_type === "refund_return") {
+      return `${absQty} item(s) were returned to sellable stock after a change-of-mind refund.`;
+    }
+
+    if (movement.movement_type === "damage") {
+      return `${absQty} damaged item(s) were removed from sellable stock.`;
+    }
+
+    if (qty > 0) return `${absQty} item(s) were added to stock.`;
+    if (qty < 0) return `${absQty} item(s) were removed from stock.`;
+
+    return "No stock quantity change was recorded.";
+  };
+
+  const getSupplierRisk = (supplier) => {
+    const lowStock = Number(supplier.low_stock_products || 0);
+    const productCount = Number(supplier.product_count || 0);
+
+    if (productCount === 0) return "No Products Linked";
+    if (lowStock > 0) return "Has Low Stock Products";
+    return "Stock Looks Okay";
+  };
+
+  const getSupplierRemark = (supplier) => {
+    const productCount = Number(supplier.product_count || 0);
+    const lowStock = Number(supplier.low_stock_products || 0);
+    const totalStock = Number(supplier.total_stock || 0);
+
+    if (productCount === 0) {
+      return "This supplier is not linked to any active products.";
+    }
+
+    if (lowStock > 0) {
+      return `${lowStock} product(s) from this supplier are low in stock.`;
+    }
+
+    return `${productCount} product(s) linked with ${totalStock} total item(s) in stock.`;
+  };
+
+  const getActivityActionLabel = (action) => {
+    const labels = {
+      "created product": "Created Product",
+      "edited product listing": "Edited Product Listing",
+      "updated stock": "Updated Product Stock",
+      "created sale": "Created Sale",
+      "created pending sale": "Created Pending Sale",
+      "completed pending sale": "Completed Pending Sale",
+      "cancelled pending sale": "Cancelled Pending Sale",
+      "created refund": "Created Refund",
+      "added damaged item": "Added Damaged Item",
+      "created supplier": "Created Supplier",
+      "updated supplier": "Updated Supplier",
+      "deleted supplier": "Deleted Supplier",
+      "updated role permissions": "Updated Role Permissions",
+    };
+
+    return labels[action] || labelText(action);
+  };
+
+  const getModuleLabel = (tableName) => {
+    const labels = {
+      sales: "Sales",
+      products: "Products",
+      suppliers: "Suppliers",
+      roles: "User Privileges",
+      users: "Users",
+      refunds: "Refunds",
+      damaged_items: "Damaged Items",
+      stock_movements: "Stock Movements",
+      settings: "Settings",
+    };
+
+    return labels[tableName] || labelText(tableName);
+  };
+
+  const parseDetails = (details) => {
+    if (!details) return null;
+
+    if (typeof details === "object") {
+      return details;
+    }
+
+    try {
+      return JSON.parse(details);
+    } catch {
+      return null;
+    }
+  };
+
+  const getActivityExplanation = (activity) => {
+    const details = parseDetails(activity.details);
+
+    if (!details) {
+      return `${getActivityActionLabel(activity.action)} in ${getModuleLabel(
+        activity.table_name
+      )}.`;
+    }
+
+    if (activity.action === "created refund") {
+      return `Refund ${details.refundNumber || ""} was created for sale ${
+        details.saleNumber || "-"
+      }. Type: ${labelText(details.refundType)}. Amount: ${money(
+        details.totalRefundAmount
+      )}. Reason: ${details.reason || "No reason added"}.`;
+    }
+
+    if (activity.action === "added damaged item") {
+      return `${details.quantity || 0} damaged item(s) recorded for ${
+        details.productName || "product"
+      }. Source: ${details.damageSource || "-"}. Reason: ${
+        details.reason || "No reason added"
+      }.`;
+    }
+
+    if (activity.action === "updated stock") {
+      return `Stock was updated for ${
+        details.productName || "product"
+      }. Type: ${labelText(details.movementType)}. Quantity: ${
+        details.quantity || 0
+      }. Before: ${details.previousStock ?? "-"}. After: ${
+        details.newStock ?? "-"
+      }. Reason: ${details.reason || "No reason added"}.`;
+    }
+
+    if (activity.action === "created sale" || activity.action === "created pending sale") {
+      return `Sale ${details.saleNumber || "-"} was created. Status: ${labelText(
+        details.status
+      )}. Total: ${money(details.totalAmount)}.`;
+    }
+
+    if (activity.action === "completed pending sale") {
+      return `Pending sale ${
+        details.saleNumber || "-"
+      } was completed. Final payment method: ${getPaymentLabel(
+        details.finalPaymentMethod
+      )}.`;
+    }
+
+    if (activity.action === "cancelled pending sale") {
+      return `Pending sale ${
+        details.saleNumber || "-"
+      } was cancelled. Advance: ${money(
+        details.advanceAmount
+      )}. Reason: ${details.reason || "No reason added"}.`;
+    }
+
+    if (details.productName) {
+      return `${getActivityActionLabel(activity.action)}: ${details.productName}.`;
+    }
+
+    if (details.saleNumber) {
+      return `${getActivityActionLabel(activity.action)}: sale ${details.saleNumber}.`;
+    }
+
+    return `${getActivityActionLabel(activity.action)} in ${getModuleLabel(
+      activity.table_name
+    )}.`;
+  };
+
+  const getProfitRemark = (profit) => {
+    const salesValue = Number(profit.sales_value || 0);
+    const grossProfit = Number(profit.gross_profit || 0);
+
+    if (salesValue <= 0) {
+      return "No completed sales recorded for this product in this report.";
+    }
+
+    const margin = (grossProfit / salesValue) * 100;
+
+    if (grossProfit < 0) {
+      return `Loss-making product. Estimated margin: ${margin.toFixed(2)}%.`;
+    }
+
+    return `Estimated gross margin: ${margin.toFixed(2)}%.`;
+  };
+
+  const getProfitMargin = (profit) => {
+    const salesValue = Number(profit.sales_value || 0);
+    const grossProfit = Number(profit.gross_profit || 0);
+
+    if (salesValue <= 0) return "0.00%";
+
+    return `${((grossProfit / salesValue) * 100).toFixed(2)}%`;
+  };
+
   const generateReport = async () => {
     try {
       setLoading(true);
@@ -211,29 +553,12 @@ function Reports() {
 
       setSummary(response.data.summary || {});
 
-      if (activeReport === "sales") {
-        setRows(response.data.sales || []);
-      }
-
-      if (activeReport === "products") {
-        setRows(response.data.products || []);
-      }
-
-      if (activeReport === "stock") {
-        setRows(response.data.movements || []);
-      }
-
-      if (activeReport === "suppliers") {
-        setRows(response.data.suppliers || []);
-      }
-
-      if (activeReport === "activity") {
-        setRows(response.data.activities || []);
-      }
-
-      if (activeReport === "profit") {
-        setRows(response.data.profits || []);
-      }
+      if (activeReport === "sales") setRows(response.data.sales || []);
+      if (activeReport === "products") setRows(response.data.products || []);
+      if (activeReport === "stock") setRows(response.data.movements || []);
+      if (activeReport === "suppliers") setRows(response.data.suppliers || []);
+      if (activeReport === "activity") setRows(response.data.activities || []);
+      if (activeReport === "profit") setRows(response.data.profits || []);
     } catch (err) {
       setError(err.response?.data?.message || "Failed to generate report");
     } finally {
@@ -253,10 +578,10 @@ function Reports() {
         "Sold By",
         "Status",
         "Payment",
-        "Subtotal",
-        "Discount",
-        "Tax",
         "Total",
+        "Cash",
+        "Card",
+        "Remark",
       ];
     }
 
@@ -266,17 +591,26 @@ function Reports() {
         "SKU",
         "Category",
         "Supplier",
-        "Stock",
+        "Stock Status",
+        "Current Stock",
         "Low Alert",
-        "Buying",
-        "Selling",
         "Qty Sold",
         "Sales Value",
+        "Remark",
       ];
     }
 
     if (activeReport === "stock") {
-      return ["Date", "Product", "SKU", "Type", "Qty", "Reason", "Updated By"];
+      return [
+        "Date",
+        "Product",
+        "SKU",
+        "Action",
+        "Direction",
+        "Qty",
+        "Explanation",
+        "Recorded By",
+      ];
     }
 
     if (activeReport === "suppliers") {
@@ -287,12 +621,13 @@ function Reports() {
         "Email",
         "Products",
         "Total Stock",
-        "Low Stock",
+        "Risk",
+        "Remark",
       ];
     }
 
     if (activeReport === "activity") {
-      return ["Date", "User", "Role", "Action", "Module", "Details"];
+      return ["Date", "User", "Role", "Action", "Module", "Explanation"];
     }
 
     if (activeReport === "profit") {
@@ -305,6 +640,8 @@ function Reports() {
         "Sales Value",
         "Buying Cost",
         "Gross Profit",
+        "Margin",
+        "Remark",
       ];
     }
 
@@ -317,12 +654,12 @@ function Reports() {
         row.sale_number,
         formatDate(row.created_at),
         row.sold_by || "-",
-        row.status,
-        row.payment_method,
-        money(row.subtotal),
-        money(row.discount_amount),
-        money(row.tax_amount),
+        getSaleStatusLabel(row.status, row.is_edited),
+        getPaymentLabel(row.payment_method),
         money(row.total_amount),
+        money(row.cash_amount),
+        money(row.card_amount),
+        getSaleRemark(row),
       ];
     }
 
@@ -332,12 +669,12 @@ function Reports() {
         row.sku || "-",
         row.category_name || "-",
         row.supplier_name || "-",
+        getStockConditionLabel(row),
         row.stock_quantity,
         row.low_stock_alert,
-        money(row.buying_price),
-        money(row.selling_price),
         row.quantity_sold,
         money(row.sales_value),
+        getProductRemark(row),
       ];
     }
 
@@ -346,9 +683,10 @@ function Reports() {
         formatDate(row.created_at),
         row.product_name || "-",
         row.sku || "-",
-        row.movement_type,
-        row.quantity,
-        row.reason || "-",
+        getMovementLabel(row.movement_type),
+        getMovementDirection(row),
+        Math.abs(Number(row.quantity || 0)),
+        `${getMovementEffect(row)} Reason: ${row.reason || "No reason added"}`,
         row.created_by_name || "-",
       ];
     }
@@ -361,7 +699,8 @@ function Reports() {
         row.email || "-",
         row.product_count,
         row.total_stock,
-        row.low_stock_products,
+        getSupplierRisk(row),
+        getSupplierRemark(row),
       ];
     }
 
@@ -370,9 +709,9 @@ function Reports() {
         formatDate(row.created_at),
         row.full_name || "-",
         row.role_name || "-",
-        row.action,
-        row.table_name || "-",
-        row.details ? JSON.stringify(row.details) : "-",
+        getActivityActionLabel(row.action),
+        getModuleLabel(row.table_name),
+        getActivityExplanation(row),
       ];
     }
 
@@ -386,6 +725,8 @@ function Reports() {
         money(row.sales_value),
         money(row.buying_cost),
         money(row.gross_profit),
+        getProfitMargin(row),
+        getProfitRemark(row),
       ];
     }
 
@@ -400,7 +741,6 @@ function Reports() {
     const contact = settings?.phone || settings?.email || "Contact not added";
 
     const columns = getPrintColumns();
-
     const tableHead = columns.map((col) => `<th>${col}</th>`).join("");
 
     const tableRows = rows
@@ -428,7 +768,7 @@ function Reports() {
               color: #000;
               margin: 0;
               padding: 0;
-              font-size: 11px;
+              font-size: 10.5px;
             }
 
             .header {
@@ -528,45 +868,45 @@ function Reports() {
     const items = [];
 
     if (activeReport === "sales") {
-      items.push(["Sales", summary.salesCount]);
-      items.push(["Completed", summary.completedCount]);
-      items.push(["Pending", summary.pendingCount]);
-      items.push(["Returned", summary.returnedCount]);
-      items.push(["Total", money(summary.totalAmount)]);
-      items.push(["Cash", money(summary.cashTotal)]);
-      items.push(["Card", money(summary.cardTotal)]);
+      items.push(["Total Sales Records", summary.salesCount]);
+      items.push(["Completed Sales", summary.completedCount]);
+      items.push(["Pending Reservations", summary.pendingCount]);
+      items.push(["Returned Sales", summary.returnedCount]);
+      items.push(["Gross Sales Total", money(summary.totalAmount)]);
+      items.push(["Cash Collected", money(summary.cashTotal)]);
+      items.push(["Card Collected", money(summary.cardTotal)]);
     }
 
     if (activeReport === "products") {
-      items.push(["Products", summary.productCount]);
-      items.push(["Total Stock", summary.totalStock]);
-      items.push(["Low Stock", summary.lowStockCount]);
-      items.push(["Qty Sold", summary.quantitySold]);
-      items.push(["Sales Value", money(summary.salesValue)]);
+      items.push(["Total Products", summary.productCount]);
+      items.push(["Total Stock Units", summary.totalStock]);
+      items.push(["Low Stock Products", summary.lowStockCount]);
+      items.push(["Completed Sale Qty", summary.quantitySold]);
+      items.push(["Completed Sales Value", money(summary.salesValue)]);
     }
 
     if (activeReport === "stock") {
-      items.push(["Movements", summary.movementCount]);
-      items.push(["Stock In", summary.totalStockIn]);
-      items.push(["Stock Out", summary.totalStockOut]);
+      items.push(["Total Movements", summary.movementCount]);
+      items.push(["Stock Added / Returned", summary.totalStockIn]);
+      items.push(["Stock Sold / Removed", summary.totalStockOut]);
     }
 
     if (activeReport === "suppliers") {
-      items.push(["Suppliers", summary.supplierCount]);
-      items.push(["Products", summary.productCount]);
-      items.push(["Total Stock", summary.totalStock]);
+      items.push(["Total Suppliers", summary.supplierCount]);
+      items.push(["Linked Products", summary.productCount]);
+      items.push(["Total Supplier Stock", summary.totalStock]);
       items.push(["Low Stock Products", summary.lowStockProducts]);
     }
 
     if (activeReport === "activity") {
-      items.push(["Activities", summary.activityCount]);
+      items.push(["Total Activities", summary.activityCount]);
     }
 
     if (activeReport === "profit") {
-      items.push(["Qty Sold", summary.quantitySold]);
+      items.push(["Quantity Sold", summary.quantitySold]);
       items.push(["Sales Value", money(summary.salesValue)]);
       items.push(["Buying Cost", money(summary.buyingCost)]);
-      items.push(["Gross Profit", money(summary.grossProfit)]);
+      items.push(["Estimated Gross Profit", money(summary.grossProfit)]);
     }
 
     return (
@@ -612,17 +952,17 @@ function Reports() {
         {activeReport === "sales" && (
           <div className="form-row">
             <div>
-              <label>Status</label>
+              <label>Sale Status</label>
               <select
                 value={filters.status}
                 onChange={(e) => updateFilter("status", e.target.value)}
               >
-                <option value="all">All Statuses</option>
-                <option value="completed">Completed</option>
-                <option value="pending">Pending</option>
-                <option value="cancelled">Cancelled</option>
-                <option value="returned">Returned</option>
-                <option value="partially_returned">Partially Returned</option>
+                <option value="all">All Sale Statuses</option>
+                <option value="completed">Completed Sales</option>
+                <option value="pending">Pending Sales / Reserved Stock</option>
+                <option value="cancelled">Cancelled Pending Sales</option>
+                <option value="returned">Fully Returned Sales</option>
+                <option value="partially_returned">Partially Returned Sales</option>
               </select>
             </div>
 
@@ -633,9 +973,9 @@ function Reports() {
                 onChange={(e) => updateFilter("paymentMethod", e.target.value)}
               >
                 <option value="all">All Payment Methods</option>
-                <option value="cash">Cash</option>
-                <option value="card">Card</option>
-                <option value="split">Split</option>
+                <option value="cash">Cash Payments</option>
+                <option value="card">Card Payments</option>
+                <option value="split">Split Payments</option>
               </select>
             </div>
           </div>
@@ -678,7 +1018,7 @@ function Reports() {
             <label>Search Product</label>
             <input
               value={filters.search}
-              placeholder="Search product or SKU..."
+              placeholder="Search product name or SKU..."
               onChange={(e) => updateFilter("search", e.target.value)}
             />
           </>
@@ -691,28 +1031,28 @@ function Reports() {
               checked={filters.lowStock}
               onChange={(e) => updateFilter("lowStock", e.target.checked)}
             />
-            Low stock only
+            Show only products at or below low stock alert
           </label>
         )}
 
         {activeReport === "stock" && (
           <>
             <div>
-              <label>Movement Type</label>
+              <label>Stock Movement Type</label>
               <select
                 value={filters.movementType}
                 onChange={(e) => updateFilter("movementType", e.target.value)}
               >
-                <option value="all">All Movements</option>
-                <option value="initial_stock">Initial Stock</option>
-                <option value="increase">Increase</option>
-                <option value="decrease">Decrease</option>
-                <option value="set">Set</option>
-                <option value="sale">Sale</option>
-                <option value="pending_sale">Pending Sale</option>
-                <option value="pending_cancel">Pending Cancel</option>
-                <option value="refund_return">Refund Return</option>
-                <option value="damage">Damage</option>
+                <option value="all">All Stock Movements</option>
+                <option value="initial_stock">Initial Stock Added</option>
+                <option value="increase">Stock Increased</option>
+                <option value="decrease">Stock Decreased</option>
+                <option value="set">Stock Manually Adjusted</option>
+                <option value="sale">Sold Items</option>
+                <option value="pending_sale">Reserved for Pending Sale</option>
+                <option value="pending_cancel">Pending Sale Cancelled</option>
+                <option value="refund_return">Returned to Stock After Refund</option>
+                <option value="damage">Damaged Stock Removed</option>
               </select>
             </div>
 
@@ -750,7 +1090,7 @@ function Reports() {
                   updateFilter("lowStockOnly", e.target.checked)
                 }
               />
-              Suppliers with low stock products only
+              Show only suppliers with low stock products
             </label>
           </>
         )}
@@ -758,7 +1098,7 @@ function Reports() {
         {activeReport === "activity" && (
           <>
             <div>
-              <label>Module</label>
+              <label>System Module</label>
               <select
                 value={filters.tableName}
                 onChange={(e) => updateFilter("tableName", e.target.value)}
@@ -767,7 +1107,7 @@ function Reports() {
                 <option value="sales">Sales</option>
                 <option value="products">Products</option>
                 <option value="suppliers">Suppliers</option>
-                <option value="roles">Roles</option>
+                <option value="roles">User Privileges</option>
                 <option value="refunds">Refunds</option>
                 <option value="damaged_items">Damaged Items</option>
               </select>
@@ -825,17 +1165,19 @@ function Reports() {
             "Sale No",
             "Date",
             "Sold By",
-            "Status",
+            "Sale Status",
             "Payment",
             "Total",
+            "Remark",
           ]}
           rows={rows.map((row) => [
             row.sale_number,
             formatDate(row.created_at),
             row.sold_by || "-",
-            row.status,
-            row.payment_method,
+            getSaleStatusLabel(row.status, row.is_edited),
+            getPaymentLabel(row.payment_method),
             money(row.total_amount),
+            getSaleRemark(row),
           ])}
         />
       );
@@ -849,18 +1191,22 @@ function Reports() {
             "SKU",
             "Category",
             "Supplier",
-            "Stock",
+            "Stock Status",
+            "Current Stock",
             "Qty Sold",
             "Sales Value",
+            "Remark",
           ]}
           rows={rows.map((row) => [
             row.name,
             row.sku || "-",
             row.category_name || "-",
             row.supplier_name || "-",
+            getStockConditionLabel(row),
             row.stock_quantity,
             row.quantity_sold,
             money(row.sales_value),
+            getProductRemark(row),
           ])}
         />
       );
@@ -869,13 +1215,24 @@ function Reports() {
     if (activeReport === "stock") {
       return (
         <ReportTable
-          columns={["Date", "Product", "Type", "Qty", "Reason", "Updated By"]}
+          columns={[
+            "Date",
+            "Product",
+            "Action",
+            "Direction",
+            "Qty",
+            "Explanation",
+            "Recorded By",
+          ]}
           rows={rows.map((row) => [
             formatDate(row.created_at),
-            row.product_name || "-",
-            row.movement_type,
-            row.quantity,
-            row.reason || "-",
+            `${row.product_name || "-"}${row.sku ? ` (${row.sku})` : ""}`,
+            getMovementLabel(row.movement_type),
+            getMovementDirection(row),
+            Math.abs(Number(row.quantity || 0)),
+            `${getMovementEffect(row)} Reason: ${
+              row.reason || "No reason added"
+            }`,
             row.created_by_name || "-",
           ])}
         />
@@ -891,7 +1248,8 @@ function Reports() {
             "Phone",
             "Products",
             "Total Stock",
-            "Low Stock",
+            "Risk",
+            "Remark",
           ]}
           rows={rows.map((row) => [
             row.name,
@@ -899,7 +1257,8 @@ function Reports() {
             row.phone || "-",
             row.product_count,
             row.total_stock,
-            row.low_stock_products,
+            getSupplierRisk(row),
+            getSupplierRemark(row),
           ])}
         />
       );
@@ -908,13 +1267,14 @@ function Reports() {
     if (activeReport === "activity") {
       return (
         <ReportTable
-          columns={["Date", "User", "Role", "Action", "Module"]}
+          columns={["Date", "User", "Role", "Action", "Module", "Explanation"]}
           rows={rows.map((row) => [
             formatDate(row.created_at),
             row.full_name || "-",
             row.role_name || "-",
-            row.action,
-            row.table_name || "-",
+            getActivityActionLabel(row.action),
+            getModuleLabel(row.table_name),
+            getActivityExplanation(row),
           ])}
         />
       );
@@ -930,6 +1290,8 @@ function Reports() {
             "Sales Value",
             "Buying Cost",
             "Gross Profit",
+            "Margin",
+            "Remark",
           ]}
           rows={rows.map((row) => [
             row.product_name,
@@ -938,6 +1300,8 @@ function Reports() {
             money(row.sales_value),
             money(row.buying_cost),
             money(row.gross_profit),
+            getProfitMargin(row),
+            getProfitRemark(row),
           ])}
         />
       );
@@ -951,7 +1315,7 @@ function Reports() {
       <div className="page-header">
         <div>
           <h2>Reports</h2>
-          <p>Generate, view, and print system reports.</p>
+          <p>Generate, view, and print clear business reports.</p>
         </div>
       </div>
 
@@ -982,7 +1346,7 @@ function Reports() {
             <div className="table-header">
               <div>
                 <h3>{activeReportTitle}</h3>
-                <p>Choose filters, generate report, then print if needed.</p>
+                <p>Choose filters, generate the report, then print if needed.</p>
               </div>
             </div>
 
@@ -1007,6 +1371,59 @@ function Reports() {
   );
 }
 
+function columnBadgeValue(column, value) {
+  if (column === "Direction") {
+    if (value === "Stock In") {
+      return <span className="badge success">Stock In</span>;
+    }
+
+    if (value === "Stock Out") {
+      return <span className="badge danger">Stock Out</span>;
+    }
+
+    return <span className="badge neutral">No Stock Change</span>;
+  }
+
+  if (
+    column === "Sale Status" ||
+    column === "Stock Status" ||
+    column === "Risk"
+  ) {
+    if (
+      value === "Completed Sale" ||
+      value === "Available" ||
+      value === "Stock Looks Okay"
+    ) {
+      return <span className="badge success">{value}</span>;
+    }
+
+    if (
+      value === "Pending Sale / Stock Reserved" ||
+      value === "Low Stock" ||
+      value === "Partially Returned Sale" ||
+      value === "Has Low Stock Products"
+    ) {
+      return <span className="badge warning">{value}</span>;
+    }
+
+    if (
+      value === "Out of Stock" ||
+      value === "Fully Returned Sale" ||
+      value === "Cancelled Pending Sale"
+    ) {
+      return <span className="badge danger">{value}</span>;
+    }
+
+    return <span className="badge neutral">{value}</span>;
+  }
+
+  if (column === "Action") {
+    return <span className="badge neutral">{value}</span>;
+  }
+
+  return value;
+}
+
 function ReportTable({ columns, rows }) {
   return (
     <div className="table-wrapper">
@@ -1023,7 +1440,9 @@ function ReportTable({ columns, rows }) {
           {rows.map((row, rowIndex) => (
             <tr key={rowIndex}>
               {row.map((cell, cellIndex) => (
-                <td key={cellIndex}>{cell}</td>
+                <td key={cellIndex}>
+                  {columnBadgeValue(columns[cellIndex], cell)}
+                </td>
               ))}
             </tr>
           ))}
