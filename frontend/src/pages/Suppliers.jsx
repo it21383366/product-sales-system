@@ -52,6 +52,39 @@ function Suppliers() {
     });
   }, [suppliers, search]);
 
+  const groupedSupplierProducts = useMemo(() => {
+    const grouped = {};
+
+    supplierProducts.forEach((batch) => {
+      const productId = batch.product_id || batch.productId || batch.batch_id;
+
+      if (!grouped[productId]) {
+        grouped[productId] = {
+          product_id: productId,
+          product_name: batch.product_name || "-",
+          sku: batch.sku || "-",
+          category_name: batch.category_name || "-",
+          low_stock_alert: batch.low_stock_alert || 0,
+          total_current_stock: 0,
+          total_original_stock: 0,
+          total_stock_value: 0,
+          batches: [],
+        };
+      }
+
+      grouped[productId].total_current_stock += Number(batch.quantity || 0);
+      grouped[productId].total_original_stock += Number(
+        batch.original_quantity || 0
+      );
+      grouped[productId].total_stock_value +=
+        Number(batch.quantity || 0) * Number(batch.selling_price || 0);
+
+      grouped[productId].batches.push(batch);
+    });
+
+    return Object.values(grouped);
+  }, [supplierProducts]);
+
   const totalPages =
     Math.ceil(filteredSuppliers.length / SUPPLIERS_PER_PAGE) || 1;
 
@@ -567,8 +600,7 @@ function Suppliers() {
               <div>
                 <h3>{supplierProductsTitle}</h3>
                 <p>
-                  Stock batches supplied by this supplier with current stock,
-                  original stock, and batch price.
+                  Products supplied by this supplier with their stock batches.
                 </p>
               </div>
 
@@ -609,53 +641,93 @@ function Suppliers() {
               </div>
             )}
 
-            <div className="table-wrapper supplier-batches-table-wrapper">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Product</th>
-                    <th>SKU</th>
-                    <th>Category</th>
-                    <th>Buying Price</th>
-                    <th>Selling Price</th>
-                    <th>Batch Stock</th>
-                    <th>Original Stock</th>
-                    <th>Batch Note</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
+            <div className="supplier-product-groups">
+              {groupedSupplierProducts.length === 0 && (
+                <div className="empty-state-box">
+                  No products or stock batches found for this supplier
+                </div>
+              )}
 
-                <tbody>
-                  {supplierProducts.length === 0 && (
-                    <tr>
-                      <td colSpan="9">
-                        No stock batches found for this supplier
-                      </td>
-                    </tr>
-                  )}
+              {groupedSupplierProducts.map((product) => (
+                <div
+                  className="supplier-product-group"
+                  key={product.product_id}
+                >
+                  <div className="supplier-product-group-header">
+                    <div>
+                      <h4>{product.product_name || "-"}</h4>
+                      <p>
+                        SKU: {product.sku || "-"} · Category:{" "}
+                        {product.category_name || "-"}
+                      </p>
+                    </div>
 
-                  {supplierProducts.map((batch) => (
-                    <tr key={batch.batch_id}>
-                      <td>{batch.product_name || "-"}</td>
-                      <td>{batch.sku || "-"}</td>
-                      <td>{batch.category_name || "-"}</td>
-                      <td>${Number(batch.buying_price || 0).toFixed(2)}</td>
-                      <td>${Number(batch.selling_price || 0).toFixed(2)}</td>
-                      <td>{Number(batch.quantity || 0)}</td>
-                      <td>{Number(batch.original_quantity || 0)}</td>
-                      <td>{batch.batch_note || "-"}</td>
-                      <td>
-                        {Number(batch.quantity || 0) <=
-                        Number(batch.low_stock_alert || 0) ? (
-                          <span className="badge danger">Low Stock</span>
-                        ) : (
-                          <span className="badge success">In Stock</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                    <div className="supplier-product-stock-summary">
+                      <span>Total Current Stock</span>
+                      <strong>{product.total_current_stock}</strong>
+                    </div>
+
+                    <div className="supplier-product-stock-summary">
+                      <span>Total Original Stock</span>
+                      <strong>{product.total_original_stock}</strong>
+                    </div>
+
+                    <div className="supplier-product-stock-summary">
+                      <span>Current Stock Value</span>
+                      <strong>
+                        ${Number(product.total_stock_value || 0).toFixed(2)}
+                      </strong>
+                    </div>
+                  </div>
+
+                  <div className="table-wrapper supplier-batches-table-wrapper">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Batch</th>
+                          <th>Buying Price</th>
+                          <th>Selling Price</th>
+                          <th>Current Stock</th>
+                          <th>Original Stock</th>
+                          <th>Batch Note</th>
+                          <th>Created</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+
+                      <tbody>
+                        {product.batches.map((batch, index) => (
+                          <tr key={batch.batch_id}>
+                            <td>Batch {index + 1}</td>
+                            <td>
+                              ${Number(batch.buying_price || 0).toFixed(2)}
+                            </td>
+                            <td>
+                              ${Number(batch.selling_price || 0).toFixed(2)}
+                            </td>
+                            <td>{Number(batch.quantity || 0)}</td>
+                            <td>{Number(batch.original_quantity || 0)}</td>
+                            <td>{batch.batch_note || "-"}</td>
+                            <td>
+                              {batch.created_at
+                                ? new Date(batch.created_at).toLocaleString()
+                                : "-"}
+                            </td>
+                            <td>
+                              {Number(batch.quantity || 0) <=
+                              Number(product.low_stock_alert || 0) ? (
+                                <span className="badge danger">Low Stock</span>
+                              ) : (
+                                <span className="badge success">In Stock</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
             </div>
 
             <div className="modal-actions">

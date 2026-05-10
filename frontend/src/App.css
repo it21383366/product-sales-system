@@ -2931,3 +2931,131 @@ th {
     grid-template-columns: 1fr;
   }
 }
+
+.supplier-batches-modal {
+  width: min(1180px, calc(100vw - 32px));
+  max-width: 1180px;
+  max-height: 90vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.supplier-batch-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+
+.supplier-batch-summary div {
+  padding: 14px;
+  border-radius: 14px;
+  background: #0b1220;
+  border: 1px solid var(--border-light);
+}
+
+.supplier-batch-summary span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.supplier-batch-summary strong {
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.supplier-product-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.supplier-product-group {
+  border: 1px solid var(--border-light);
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.65);
+  overflow: hidden;
+}
+
+.supplier-product-group-header {
+  display: grid;
+  grid-template-columns: 1.6fr 150px 150px 180px;
+  gap: 14px;
+  align-items: stretch;
+  padding: 16px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.supplier-product-group-header h4 {
+  margin: 0 0 6px;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.supplier-product-group-header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.supplier-product-stock-summary {
+  padding: 12px;
+  border-radius: 12px;
+  background: #0b1220;
+  border: 1px solid var(--border-light);
+}
+
+.supplier-product-stock-summary span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.supplier-product-stock-summary strong {
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.supplier-batches-table-wrapper {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.empty-state-box {
+  padding: 18px;
+  border-radius: 14px;
+  background: #0b1220;
+  border: 1px solid var(--border-light);
+  color: var(--muted);
+  font-weight: 800;
+  text-align: center;
+}
+
+@media (max-width: 1050px) {
+  .supplier-product-group-header {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .supplier-batch-summary {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  .supplier-product-group-header,
+  .supplier-batch-summary {
+    grid-template-columns: 1fr;
+  }
+}
