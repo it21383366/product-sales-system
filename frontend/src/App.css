@@ -2075,7 +2075,7 @@ th {
 
 .report-summary-grid {
   display: grid !important;
-  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
   gap: 14px !important;
   width: 100% !important;
   align-items: stretch !important;
@@ -2357,9 +2357,6 @@ th {
     grid-template-columns: 250px minmax(0, 1fr);
   }
 
-  .report-summary-grid {
-    grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
-  }
 }
 
 @media (max-width: 1200px) {
@@ -2595,7 +2592,7 @@ th {
   }
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 900px) {
   .report-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
