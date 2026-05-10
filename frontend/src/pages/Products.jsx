@@ -23,6 +23,15 @@ function Products() {
   const [showStockReview, setShowStockReview] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
 
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [categoryForm, setCategoryForm] = useState({
+    id: "",
+    name: "",
+    description: "",
+  });
+  const [categoryError, setCategoryError] = useState("");
+  const [categoryMessage, setCategoryMessage] = useState("");
+
   const [editMode, setEditMode] = useState(false);
   const [editingProductId, setEditingProductId] = useState(null);
 
@@ -65,7 +74,10 @@ function Products() {
     }
   };
 
-  const fetchProducts = async (searchValue = search, categoryValue = selectedCategory) => {
+  const fetchProducts = async (
+    searchValue = search,
+    categoryValue = selectedCategory
+  ) => {
     try {
       setError("");
 
@@ -147,6 +159,135 @@ function Products() {
     setShowStockReview(false);
     setSelectedProduct(null);
     resetStockForm();
+  };
+
+  const openCategoryModal = () => {
+    setCategoryForm({
+      id: "",
+      name: "",
+      description: "",
+    });
+    setCategoryError("");
+    setCategoryMessage("");
+    setShowCategoryModal(true);
+  };
+
+  const closeCategoryModal = () => {
+    setShowCategoryModal(false);
+    setCategoryForm({
+      id: "",
+      name: "",
+      description: "",
+    });
+    setCategoryError("");
+    setCategoryMessage("");
+  };
+
+  const handleCategorySelect = (categoryId) => {
+    setCategoryError("");
+    setCategoryMessage("");
+
+    if (!categoryId) {
+      setCategoryForm({
+        id: "",
+        name: "",
+        description: "",
+      });
+      return;
+    }
+
+    const selected = categories.find((category) => category.id === categoryId);
+
+    if (!selected) {
+      setCategoryForm({
+        id: "",
+        name: "",
+        description: "",
+      });
+      return;
+    }
+
+    setCategoryForm({
+      id: selected.id,
+      name: selected.name || "",
+      description: selected.description || "",
+    });
+  };
+
+  const handleSaveCategory = async (e) => {
+    e.preventDefault();
+
+    try {
+      setCategoryError("");
+      setCategoryMessage("");
+
+      if (!categoryForm.name.trim()) {
+        setCategoryError("Category name is required");
+        return;
+      }
+
+      if (categoryForm.id) {
+        await api.patch(`/api/categories/${categoryForm.id}`, {
+          name: categoryForm.name,
+          description: categoryForm.description,
+        });
+
+        setCategoryMessage("Category updated successfully");
+      } else {
+        await api.post("/api/categories", {
+          name: categoryForm.name,
+          description: categoryForm.description,
+        });
+
+        setCategoryMessage("Category created successfully");
+      }
+
+      await fetchCategories();
+      await fetchProducts(search, selectedCategory);
+
+      setCategoryForm({
+        id: "",
+        name: "",
+        description: "",
+      });
+    } catch (err) {
+      setCategoryError(err.response?.data?.message || "Failed to save category");
+    }
+  };
+
+  const handleDeleteCategory = async () => {
+    try {
+      setCategoryError("");
+      setCategoryMessage("");
+
+      if (!categoryForm.id) {
+        setCategoryError("Select a category to delete");
+        return;
+      }
+
+      await api.delete(`/api/categories/${categoryForm.id}`);
+
+      setCategoryMessage("Category deleted successfully");
+
+      const deletedCategoryId = categoryForm.id;
+
+      if (selectedCategory === deletedCategoryId) {
+        setSelectedCategory("");
+      }
+
+      setCategoryForm({
+        id: "",
+        name: "",
+        description: "",
+      });
+
+      await fetchCategories();
+      await fetchProducts(search, "");
+    } catch (err) {
+      setCategoryError(
+        err.response?.data?.message || "Failed to delete category"
+      );
+    }
   };
 
   const handleOpenAddProduct = () => {
@@ -383,14 +524,22 @@ function Products() {
                 </p>
               </div>
 
-              {hasPermission("products.create") && (
-                <button
-                  className="primary-btn add-product-btn"
-                  onClick={handleOpenAddProduct}
-                >
-                  + Add Product
-                </button>
-              )}
+              <div className="table-header-actions">
+                {hasPermission("categories.manage") && (
+                  <button className="secondary-btn" onClick={openCategoryModal}>
+                    Add / Edit Category
+                  </button>
+                )}
+
+                {hasPermission("products.create") && (
+                  <button
+                    className="primary-btn add-product-btn"
+                    onClick={handleOpenAddProduct}
+                  >
+                    + Add Product
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="table-wrapper">
@@ -951,6 +1100,93 @@ function Products() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {showCategoryModal && (
+        <div className="modal-overlay">
+          <div className="category-modal">
+            <div className="modal-header">
+              <div>
+                <h3>Add / Edit Category</h3>
+                <p>Create, update, or delete product categories.</p>
+              </div>
+
+              <button className="modal-close-btn" onClick={closeCategoryModal}>
+                ×
+              </button>
+            </div>
+
+            {categoryMessage && (
+              <div className="success-message">{categoryMessage}</div>
+            )}
+
+            {categoryError && <div className="modal-error">{categoryError}</div>}
+
+            <form className="product-form" onSubmit={handleSaveCategory}>
+              <label>Select Existing Category</label>
+              <select
+                value={categoryForm.id}
+                onChange={(e) => handleCategorySelect(e.target.value)}
+              >
+                <option value="">Create new category</option>
+                {categories.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
+                  </option>
+                ))}
+              </select>
+
+              <label>Category Name *</label>
+              <input
+                value={categoryForm.name}
+                placeholder="Example: Electronics"
+                onChange={(e) =>
+                  setCategoryForm({
+                    ...categoryForm,
+                    name: e.target.value,
+                  })
+                }
+                required
+              />
+
+              <label>Description</label>
+              <textarea
+                value={categoryForm.description}
+                placeholder="Category description"
+                onChange={(e) =>
+                  setCategoryForm({
+                    ...categoryForm,
+                    description: e.target.value,
+                  })
+                }
+              />
+
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={closeCategoryModal}
+                >
+                  Close
+                </button>
+
+                {categoryForm.id && (
+                  <button
+                    type="button"
+                    className="danger-table-btn category-delete-btn"
+                    onClick={handleDeleteCategory}
+                  >
+                    Delete Category
+                  </button>
+                )}
+
+                <button type="submit" className="primary-btn">
+                  {categoryForm.id ? "Update Category" : "Add Category"}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>
