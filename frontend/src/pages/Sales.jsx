@@ -24,6 +24,7 @@ function Sales() {
 
   const [showSaleModal, setShowSaleModal] = useState(false);
   const [showReviewModal, setShowReviewModal] = useState(false);
+  const [saleModalError, setSaleModalError] = useState("");
   const [editMode, setEditMode] = useState(false);
   const [editingSaleId, setEditingSaleId] = useState(null);
 
@@ -133,6 +134,7 @@ function Sales() {
     resetForm();
     setShowSaleModal(true);
     setShowReviewModal(false);
+    setSaleModalError("");
     setMessage("");
     setError("");
   };
@@ -167,6 +169,7 @@ function Sales() {
 
       setShowSaleModal(true);
       setShowReviewModal(false);
+      setSaleModalError("");
       setMessage("");
       setError("");
     } catch (err) {
@@ -179,6 +182,7 @@ function Sales() {
     setShowReviewModal(false);
     setEditMode(false);
     setEditingSaleId(null);
+    setSaleModalError("");
     resetForm();
   };
 
@@ -190,6 +194,8 @@ function Sales() {
       ...form,
       items: updatedItems,
     });
+
+    setSaleModalError("");
   };
 
   const addItemRow = () => {
@@ -197,6 +203,8 @@ function Sales() {
       ...form,
       items: [...form.items, { productId: "", quantity: 1 }],
     });
+
+    setSaleModalError("");
   };
 
   const removeItemRow = (index) => {
@@ -204,6 +212,8 @@ function Sales() {
       ...form,
       items: form.items.filter((_, itemIndex) => itemIndex !== index),
     });
+
+    setSaleModalError("");
   };
 
   const validatePayment = () => {
@@ -255,9 +265,10 @@ function Sales() {
   const handleReview = (e) => {
     e.preventDefault();
     setError("");
+    setSaleModalError("");
 
     if (editMode && !form.editReason.trim()) {
-      setError("Edit reason is required");
+      setSaleModalError("Edit reason is required");
       return;
     }
 
@@ -266,14 +277,14 @@ function Sales() {
     );
 
     if (invalidItem) {
-      setError("Please select products and valid quantities");
+      setSaleModalError("Please select products and valid quantities");
       return;
     }
 
     const paymentError = validatePayment();
 
     if (paymentError) {
-      setError(paymentError);
+      setSaleModalError(paymentError);
       return;
     }
 
@@ -283,6 +294,7 @@ function Sales() {
   const submitSale = async () => {
     try {
       setError("");
+      setSaleModalError("");
       setMessage("");
 
       const payload = {
@@ -322,7 +334,7 @@ function Sales() {
       printSaleSlip(response.data.sale);
     } catch (err) {
       setShowReviewModal(false);
-      setError(err.response?.data?.message || "Failed to save sale");
+      setSaleModalError(err.response?.data?.message || "Failed to save sale");
     }
   };
 
@@ -437,7 +449,7 @@ function Sales() {
       });
 
       closeCancelPending();
-      setMessage("Pending sale cancelled and stock returned");
+      setMessage("Pending sale cancelled, advance returned, and stock returned");
 
       await fetchSales();
       await fetchProducts();
@@ -468,6 +480,35 @@ function Sales() {
     return <span className="badge success">Completed</span>;
   };
 
+  const getSaleRemark = (sale) => {
+    const advance = Number(sale.advance_amount || 0);
+    const balance = Number(sale.balance_amount || 0);
+
+    if (sale.status === "pending") {
+      return `$${advance.toFixed(2)} paid as advance. $${balance.toFixed(
+        2
+      )} needs to be paid.`;
+    }
+
+    if (sale.status === "cancelled") {
+      if (advance > 0) {
+        return `$${advance.toFixed(2)} advance returned to customer.`;
+      }
+
+      return "Cancelled sale.";
+    }
+
+    if (sale.is_edited) {
+      return "Sale was edited after completion.";
+    }
+
+    if (advance > 0 && sale.status === "completed") {
+      return `$${advance.toFixed(2)} was paid as advance. Balance completed.`;
+    }
+
+    return "Paid in full.";
+  };
+
   const printSaleSlip = (sale) => {
     const printWindow = window.open("", "_blank", "width=320,height=700");
 
@@ -491,10 +532,27 @@ function Sales() {
       sale.status === "pending"
         ? "PENDING SALE / STOCK RESERVED"
         : sale.status === "cancelled"
-        ? "CANCELLED SALE"
+        ? "CANCELLED SALE / ADVANCE RETURNED"
         : sale.status === "refunded"
         ? "REFUNDED SALE"
         : "COMPLETED SALE";
+
+    const remark =
+      sale.status === "pending"
+        ? `$${Number(sale.advance_amount || 0).toFixed(
+            2
+          )} paid as advance. $${Number(sale.balance_amount || 0).toFixed(
+            2
+          )} needs to be paid.`
+        : sale.status === "cancelled"
+        ? `$${Number(sale.advance_amount || 0).toFixed(
+            2
+          )} advance returned to customer.`
+        : Number(sale.advance_amount || 0) > 0
+        ? `$${Number(sale.advance_amount || 0).toFixed(
+            2
+          )} was paid as advance. Balance completed.`
+        : "Paid in full.";
 
     printWindow.document.write(`
       <html>
@@ -567,6 +625,11 @@ function Sales() {
               text-align: center;
               margin-top: 6px;
             }
+
+            .remark {
+              font-weight: bold;
+              margin-top: 6px;
+            }
           </style>
         </head>
 
@@ -599,14 +662,7 @@ function Sales() {
           <p>Tax: $${Number(sale.tax_amount || 0).toFixed(2)}</p>
           <p class="total">Total: $${Number(sale.total_amount || 0).toFixed(2)}</p>
 
-          ${
-            sale.status === "pending"
-              ? `
-                <p>Advance Paid: $${Number(sale.advance_amount || 0).toFixed(2)}</p>
-                <p>Balance Due: $${Number(sale.balance_amount || 0).toFixed(2)}</p>
-              `
-              : ""
-          }
+          <p class="remark">Remark: ${remark}</p>
 
           <div class="line"></div>
 
@@ -673,10 +729,9 @@ function Sales() {
               <tr>
                 <th>Sale No</th>
                 <th>Total</th>
-                <th>Advance</th>
-                <th>Balance</th>
                 <th>Payment</th>
                 <th>Status</th>
+                <th>Remark</th>
                 <th>Sold By</th>
                 <th>Date</th>
                 <th>Actions</th>
@@ -686,7 +741,7 @@ function Sales() {
             <tbody>
               {paginatedSales.length === 0 && (
                 <tr>
-                  <td colSpan="9">No sales found</td>
+                  <td colSpan="8">No sales found</td>
                 </tr>
               )}
 
@@ -694,10 +749,9 @@ function Sales() {
                 <tr key={sale.id}>
                   <td>{sale.sale_number}</td>
                   <td>${Number(sale.total_amount || 0).toFixed(2)}</td>
-                  <td>${Number(sale.advance_amount || 0).toFixed(2)}</td>
-                  <td>${Number(sale.balance_amount || 0).toFixed(2)}</td>
                   <td>{sale.payment_method || "-"}</td>
                   <td>{getStatusBadge(sale)}</td>
+                  <td>{getSaleRemark(sale)}</td>
                   <td>{sale.sold_by || "-"}</td>
                   <td>{new Date(sale.created_at).toLocaleString()}</td>
                   <td>
@@ -788,12 +842,17 @@ function Sales() {
             </div>
 
             <form className="product-form" onSubmit={handleReview}>
+              {saleModalError && (
+                <div className="modal-error">{saleModalError}</div>
+              )}
+
               {!editMode && (
                 <div>
                   <label>Sale Type</label>
                   <select
                     value={form.saleStatus}
-                    onChange={(e) =>
+                    onChange={(e) => {
+                      setSaleModalError("");
                       setForm({
                         ...form,
                         saleStatus: e.target.value,
@@ -801,8 +860,8 @@ function Sales() {
                         cashAmount: "",
                         cardAmount: "",
                         paymentMethod: "cash",
-                      })
-                    }
+                      });
+                    }}
                   >
                     {hasPermission("sales.create") && (
                       <option value="completed">Completed Sale</option>
@@ -893,9 +952,10 @@ function Sales() {
                     type="number"
                     value={form.discountAmount}
                     placeholder="0.00"
-                    onChange={(e) =>
-                      setForm({ ...form, discountAmount: e.target.value })
-                    }
+                    onChange={(e) => {
+                      setSaleModalError("");
+                      setForm({ ...form, discountAmount: e.target.value });
+                    }}
                   />
                 </div>
 
@@ -905,9 +965,10 @@ function Sales() {
                     type="number"
                     value={form.taxAmount}
                     placeholder="0.00"
-                    onChange={(e) =>
-                      setForm({ ...form, taxAmount: e.target.value })
-                    }
+                    onChange={(e) => {
+                      setSaleModalError("");
+                      setForm({ ...form, taxAmount: e.target.value });
+                    }}
                   />
                 </div>
               </div>
@@ -919,9 +980,10 @@ function Sales() {
                     type="number"
                     value={form.advanceAmount}
                     placeholder="0.00"
-                    onChange={(e) =>
-                      setForm({ ...form, advanceAmount: e.target.value })
-                    }
+                    onChange={(e) => {
+                      setSaleModalError("");
+                      setForm({ ...form, advanceAmount: e.target.value });
+                    }}
                     required
                   />
                 </div>
@@ -936,14 +998,15 @@ function Sales() {
 
                 <select
                   value={form.paymentMethod}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    setSaleModalError("");
                     setForm({
                       ...form,
                       paymentMethod: e.target.value,
                       cashAmount: "",
                       cardAmount: "",
-                    })
-                  }
+                    });
+                  }}
                 >
                   <option value="cash">Cash</option>
                   <option value="card">Card</option>
@@ -959,9 +1022,10 @@ function Sales() {
                       type="number"
                       value={form.cashAmount}
                       placeholder="0.00"
-                      onChange={(e) =>
-                        setForm({ ...form, cashAmount: e.target.value })
-                      }
+                      onChange={(e) => {
+                        setSaleModalError("");
+                        setForm({ ...form, cashAmount: e.target.value });
+                      }}
                     />
                   </div>
 
@@ -971,9 +1035,10 @@ function Sales() {
                       type="number"
                       value={form.cardAmount}
                       placeholder="0.00"
-                      onChange={(e) =>
-                        setForm({ ...form, cardAmount: e.target.value })
-                      }
+                      onChange={(e) => {
+                        setSaleModalError("");
+                        setForm({ ...form, cardAmount: e.target.value });
+                      }}
                     />
                   </div>
                 </div>
@@ -984,9 +1049,10 @@ function Sales() {
                   <label>Edit Reason *</label>
                   <textarea
                     value={form.editReason}
-                    onChange={(e) =>
-                      setForm({ ...form, editReason: e.target.value })
-                    }
+                    onChange={(e) => {
+                      setSaleModalError("");
+                      setForm({ ...form, editReason: e.target.value });
+                    }}
                     placeholder="Reason for editing this sale"
                     required
                   />
@@ -1017,17 +1083,24 @@ function Sales() {
                 {form.saleStatus === "pending" && !editMode && (
                   <>
                     <div>
-                      <span>Advance</span>
+                      <span>Advance Paid</span>
                       <strong>${advanceAmount.toFixed(2)}</strong>
                     </div>
 
                     <div>
-                      <span>Balance</span>
+                      <span>Amount To Be Paid</span>
                       <strong>${Math.max(balanceAmount, 0).toFixed(2)}</strong>
                     </div>
                   </>
                 )}
               </div>
+
+              {form.saleStatus === "pending" && !editMode && (
+                <div className="pending-remark-box">
+                  ${advanceAmount.toFixed(2)} paid as advance. $
+                  {Math.max(balanceAmount, 0).toFixed(2)} needs to be paid.
+                </div>
+              )}
 
               <div className="modal-actions">
                 <button
@@ -1095,13 +1168,21 @@ function Sales() {
                 {form.saleStatus === "pending" && !editMode && (
                   <>
                     <div>
-                      <span>Advance</span>
+                      <span>Advance Paid</span>
                       <strong>${advanceAmount.toFixed(2)}</strong>
                     </div>
 
                     <div>
-                      <span>Balance</span>
+                      <span>Amount To Be Paid</span>
                       <strong>${Math.max(balanceAmount, 0).toFixed(2)}</strong>
+                    </div>
+
+                    <div className="review-full">
+                      <span>Remark</span>
+                      <strong>
+                        ${advanceAmount.toFixed(2)} paid as advance. $
+                        {Math.max(balanceAmount, 0).toFixed(2)} needs to be paid.
+                      </strong>
                     </div>
                   </>
                 )}
@@ -1180,11 +1261,16 @@ function Sales() {
               </div>
 
               <div>
-                <span>Balance Due</span>
+                <span>Amount To Be Paid</span>
                 <strong>
                   ${Number(selectedPendingSale.balance_amount || 0).toFixed(2)}
                 </strong>
               </div>
+            </div>
+
+            <div className="pending-remark-box">
+              ${Number(selectedPendingSale.advance_amount || 0).toFixed(2)} paid
+              as advance. ${Number(selectedPendingSale.balance_amount || 0).toFixed(2)} needs to be paid.
             </div>
 
             <div className="product-form">
@@ -1279,6 +1365,32 @@ function Sales() {
               <button className="modal-close-btn" onClick={closeCancelPending}>
                 ×
               </button>
+            </div>
+
+            <div className="sale-total-box">
+              <div>
+                <span>Total</span>
+                <strong>
+                  ${Number(selectedPendingSale.total_amount || 0).toFixed(2)}
+                </strong>
+              </div>
+
+              <div>
+                <span>Advance To Return</span>
+                <strong>
+                  ${Number(selectedPendingSale.advance_amount || 0).toFixed(2)}
+                </strong>
+              </div>
+
+              <div>
+                <span>Stock</span>
+                <strong>Return</strong>
+              </div>
+            </div>
+
+            <div className="pending-remark-box danger-remark">
+              ${Number(selectedPendingSale.advance_amount || 0).toFixed(2)} must
+              be returned to the customer when this pending sale is cancelled.
             </div>
 
             <div className="product-form">

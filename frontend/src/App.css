@@ -2088,3 +2088,20 @@ th {
     grid-template-columns: 1fr;
   }
 }
+
+.pending-remark-box {
+  width: 100%;
+  padding: 13px 14px;
+  border-radius: 12px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  color: #bfdbfe;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.danger-remark {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #fecaca;
+}
