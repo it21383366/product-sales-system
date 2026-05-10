@@ -1720,3 +1720,39 @@ th {
     grid-template-columns: 1fr;
   }
 }
+
+/* SYSTEM LOGS TABLE SCROLLBAR THEME */
+
+.logs-page .table-wrapper {
+  padding-bottom: 10px;
+}
+
+/* Chrome, Edge, Safari */
+.logs-page .table-wrapper::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.logs-page .table-wrapper::-webkit-scrollbar-track {
+  background: #0b1220;
+  border-radius: 999px;
+}
+
+.logs-page .table-wrapper::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 999px;
+}
+
+.logs-page .table-wrapper::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* Firefox */
+.logs-page .table-wrapper {
+  scrollbar-width: thin;
+  scrollbar-color: #334155 #0b1220;
+}
+
+.logs-page table {
+  margin-bottom: 8px;
+}
