@@ -9,6 +9,7 @@ import Settings from "./pages/Settings";
 import Suppliers from "./pages/Suppliers";
 import Damages from "./pages/Damages";
 import Reports from "./pages/Reports";
+import Dashboard from "./pages/Dashboard";
 import "./App.css";
 
 const API_URL = import.meta.env.VITE_API_URL;
@@ -292,36 +293,7 @@ function App() {
         </aside>
 
         <main className="main-content">
-          {activePage === "dashboard" && (
-            <>
-              <section className="cards">
-                <div className="card">
-                  <h3>Organisation</h3>
-                  <p>{settings?.name || user.organisationName}</p>
-                </div>
-
-                <div className="card">
-                  <h3>Your Role</h3>
-                  <p>{user.role}</p>
-                </div>
-
-                <div className="card">
-                  <h3>Permissions</h3>
-                  <p>{user.permissions.length} active</p>
-                </div>
-              </section>
-
-              <section className="panel">
-                <h2>Role Based Access</h2>
-
-                <div className="permission-list">
-                  {user.permissions.map((permission) => (
-                    <span key={permission}>{permission}</span>
-                  ))}
-                </div>
-              </section>
-            </>
-          )}
+          {activePage === "dashboard" && <Dashboard />}
 
           {activePage === "products" && <Products />}
 

@@ -4654,6 +4654,203 @@ app.post(
 );
 
 // =========================
+// DASHBOARD OVERVIEW API
+// =========================
+
+app.get(
+  "/api/dashboard/overview",
+  authMiddleware,
+  requirePermission("dashboard.view"),
+  async (req, res) => {
+    try {
+      const orgId = req.user.organisation_id;
+
+      const [
+        todaySalesResult,
+        salesLast7DaysResult,
+        topProductsResult,
+        lowStockResult,
+        pendingSalesResult,
+        productStatsResult,
+        refundStatsResult,
+        damageStatsResult,
+        recentActivityResult,
+      ] = await Promise.all([
+        pool.query(
+          `
+          SELECT
+            COUNT(*) AS sales_count,
+            COALESCE(SUM(total_amount), 0) AS total_sales,
+            COALESCE(SUM(cash_amount), 0) AS cash_total,
+            COALESCE(SUM(card_amount), 0) AS card_total
+          FROM sales
+          WHERE organisation_id = $1
+          AND status = 'completed'
+          AND DATE(created_at) = CURRENT_DATE
+          `,
+          [orgId]
+        ),
+
+        pool.query(
+          `
+          SELECT
+            days.day::date AS sale_date,
+            COALESCE(SUM(sales.total_amount), 0) AS total_sales,
+            COUNT(sales.id) AS sales_count
+          FROM generate_series(
+            CURRENT_DATE - INTERVAL '6 days',
+            CURRENT_DATE,
+            INTERVAL '1 day'
+          ) AS days(day)
+          LEFT JOIN sales
+            ON DATE(sales.created_at) = days.day::date
+            AND sales.organisation_id = $1
+            AND sales.status = 'completed'
+          GROUP BY days.day
+          ORDER BY days.day ASC
+          `,
+          [orgId]
+        ),
+
+        pool.query(
+          `
+          SELECT
+            products.name,
+            products.sku,
+            COALESCE(SUM(sale_items.quantity), 0) AS quantity_sold,
+            COALESCE(SUM(sale_items.total_price), 0) AS sales_value
+          FROM sale_items
+          INNER JOIN sales ON sale_items.sale_id = sales.id
+          INNER JOIN products ON sale_items.product_id = products.id
+          WHERE sales.organisation_id = $1
+          AND sales.status = 'completed'
+          AND sales.created_at >= CURRENT_DATE - INTERVAL '30 days'
+          GROUP BY products.id, products.name, products.sku
+          ORDER BY quantity_sold DESC
+          LIMIT 5
+          `,
+          [orgId]
+        ),
+
+        pool.query(
+          `
+          SELECT
+            id,
+            name,
+            sku,
+            stock_quantity,
+            low_stock_alert
+          FROM products
+          WHERE organisation_id = $1
+          AND is_active = true
+          AND stock_quantity <= low_stock_alert
+          ORDER BY stock_quantity ASC
+          LIMIT 8
+          `,
+          [orgId]
+        ),
+
+        pool.query(
+          `
+          SELECT
+            COUNT(*) AS pending_count,
+            COALESCE(SUM(total_amount), 0) AS pending_total,
+            COALESCE(SUM(advance_amount), 0) AS advance_total,
+            COALESCE(SUM(balance_amount), 0) AS balance_total
+          FROM sales
+          WHERE organisation_id = $1
+          AND status = 'pending'
+          `,
+          [orgId]
+        ),
+
+        pool.query(
+          `
+          SELECT
+            COUNT(*) AS product_count,
+            COALESCE(SUM(stock_quantity), 0) AS total_stock,
+            COALESCE(SUM(
+              CASE
+                WHEN stock_quantity <= low_stock_alert THEN 1
+                ELSE 0
+              END
+            ), 0) AS low_stock_count
+          FROM products
+          WHERE organisation_id = $1
+          AND is_active = true
+          `,
+          [orgId]
+        ),
+
+        pool.query(
+          `
+          SELECT
+            COUNT(*) AS refund_count,
+            COALESCE(SUM(total_refund_amount), 0) AS refund_total
+          FROM refunds
+          WHERE organisation_id = $1
+          AND created_at >= CURRENT_DATE - INTERVAL '30 days'
+          `,
+          [orgId]
+        ),
+
+        pool.query(
+          `
+          SELECT
+            COUNT(*) AS damage_count,
+            COALESCE(SUM(quantity), 0) AS damaged_quantity
+          FROM damaged_items
+          WHERE organisation_id = $1
+          AND created_at >= CURRENT_DATE - INTERVAL '30 days'
+          `,
+          [orgId]
+        ),
+
+        pool.query(
+          `
+          SELECT
+            audit_logs.action,
+            audit_logs.table_name,
+            audit_logs.details,
+            audit_logs.created_at,
+            users.full_name
+          FROM audit_logs
+          LEFT JOIN users ON audit_logs.user_id = users.id
+          WHERE audit_logs.organisation_id = $1
+          ORDER BY audit_logs.created_at DESC
+          LIMIT 8
+          `,
+          [orgId]
+        ),
+      ]);
+
+      res.json({
+        status: "success",
+        dashboard: {
+          todaySales: todaySalesResult.rows[0],
+          salesLast7Days: salesLast7DaysResult.rows,
+          topProducts: topProductsResult.rows,
+          lowStockProducts: lowStockResult.rows,
+          pendingSales: pendingSalesResult.rows[0],
+          productStats: productStatsResult.rows[0],
+          refundStats: refundStatsResult.rows[0],
+          damageStats: damageStatsResult.rows[0],
+          recentActivity: recentActivityResult.rows,
+        },
+      });
+    } catch (error) {
+      console.error("Dashboard overview error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to load dashboard overview",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// =========================
 // REPORTS / DASHBOARD API
 // =========================
 
