@@ -7,19 +7,29 @@ const reportCards = [
     key: "sales",
     title: "Sales Report",
     permission: "reports.sales.view",
-    description: "Sales totals, payment methods, sale status, returns, and reservations.",
+    description:
+      "Sales totals, payment methods, sale status, returns, and reservations.",
   },
   {
     key: "products",
-    title: "Product Report",
+    title: "Product Stock Report",
     permission: "reports.products.view",
-    description: "Product stock, category, supplier, sales quantity, and stock condition.",
+    description:
+      "Product stock, batch count, category, supplier, sales quantity, and stock value.",
+  },
+  {
+    key: "stockBatches",
+    title: "Stock Batch Report",
+    permission: "reports.stock.view",
+    description:
+      "Batch-level stock with buying price, selling price, supplier, original stock, and current stock.",
   },
   {
     key: "stock",
     title: "Stock Movement Report",
     permission: "reports.stock.view",
-    description: "Clear explanation of stock increases, sales, refunds, reservations, and damages.",
+    description:
+      "Clear explanation of stock increases, sales, refunds, reservations, and damages.",
   },
   {
     key: "suppliers",
@@ -37,7 +47,7 @@ const reportCards = [
     key: "profit",
     title: "Profit Report",
     permission: "reports.profit.view",
-    description: "Estimated gross profit using selling value minus buying cost.",
+    description: "Estimated gross profit using batch buying cost and sale value.",
   },
 ];
 
@@ -219,10 +229,24 @@ function Reports() {
     return "Available";
   };
 
+  const getProductPriceRange = (product) => {
+    const lowest = Number(
+      product.lowest_selling_price || product.selling_price || 0
+    );
+    const highest = Number(
+      product.highest_selling_price || product.selling_price || 0
+    );
+
+    if (lowest === highest) return money(highest);
+
+    return `${money(lowest)} - ${money(highest)}`;
+  };
+
   const getProductRemark = (product) => {
     const stock = Number(product.stock_quantity || 0);
     const alert = Number(product.low_stock_alert || 0);
     const qtySold = Number(product.quantity_sold || 0);
+    const batchCount = Number(product.batch_count || 0);
 
     if (stock <= 0) {
       return "No sellable stock available.";
@@ -232,11 +256,42 @@ function Reports() {
       return `Stock is at or below the alert level of ${alert}. Reorder may be needed.`;
     }
 
+    if (batchCount > 1 && qtySold > 0) {
+      return `${batchCount} stock batch(es). ${qtySold} item(s) sold from completed sales.`;
+    }
+
+    if (batchCount > 1) {
+      return `${batchCount} stock batch(es) with different price/cost records.`;
+    }
+
     if (qtySold > 0) {
       return `${qtySold} item(s) sold from completed sales.`;
     }
 
     return "Product is in stock but no completed sales recorded in this report.";
+  };
+
+  const getBatchStatusLabel = (batch) => {
+    const qty = Number(batch.quantity || 0);
+    const alert = Number(batch.low_stock_alert || 0);
+
+    if (qty <= 0) return "Out of Stock";
+    if (qty <= alert) return "Low Stock";
+    return "Available";
+  };
+
+  const getBatchRemark = (batch) => {
+    const qty = Number(batch.quantity || 0);
+    const original = Number(batch.original_quantity || 0);
+    const soldOrRemoved = original - qty;
+
+    if (qty <= 0) return "This batch has no remaining sellable stock.";
+
+    if (soldOrRemoved > 0) {
+      return `${soldOrRemoved} item(s) have been sold, reserved, returned, or adjusted from this batch.`;
+    }
+
+    return "This batch still has its full original stock quantity.";
   };
 
   const getMovementLabel = (type) => {
@@ -339,6 +394,7 @@ function Reports() {
       "created product": "Created Product",
       "edited product listing": "Edited Product Listing",
       "updated stock": "Updated Product Stock",
+      "added stock batch to existing product": "Added Stock Batch",
       "created sale": "Created Sale",
       "created pending sale": "Created Pending Sale",
       "completed pending sale": "Completed Pending Sale",
@@ -419,7 +475,18 @@ function Reports() {
       }. Reason: ${details.reason || "No reason added"}.`;
     }
 
-    if (activity.action === "created sale" || activity.action === "created pending sale") {
+    if (activity.action === "added stock batch to existing product") {
+      return `New stock batch was added for ${
+        details.productName || "product"
+      }. Quantity: ${details.quantity || 0}. Selling price: ${money(
+        details.sellingPrice
+      )}. Buying price: ${money(details.buyingPrice)}.`;
+    }
+
+    if (
+      activity.action === "created sale" ||
+      activity.action === "created pending sale"
+    ) {
       return `Sale ${details.saleNumber || "-"} was created. Status: ${labelText(
         details.status
       )}. Total: ${money(details.totalAmount)}.`;
@@ -510,6 +577,16 @@ function Reports() {
         };
       }
 
+      if (activeReport === "stockBatches") {
+        endpoint = "/api/reports/stock-batches";
+        params = {
+          search: filters.search || undefined,
+          categoryId: filters.categoryId || undefined,
+          supplierId: filters.supplierId || undefined,
+          lowStock: filters.lowStock ? "true" : undefined,
+        };
+      }
+
       if (activeReport === "stock") {
         endpoint = "/api/reports/stock-movements";
         params = {
@@ -555,6 +632,8 @@ function Reports() {
 
       if (activeReport === "sales") setRows(response.data.sales || []);
       if (activeReport === "products") setRows(response.data.products || []);
+      if (activeReport === "stockBatches")
+        setRows(response.data.batches || []);
       if (activeReport === "stock") setRows(response.data.movements || []);
       if (activeReport === "suppliers") setRows(response.data.suppliers || []);
       if (activeReport === "activity") setRows(response.data.activities || []);
@@ -567,7 +646,10 @@ function Reports() {
   };
 
   const activeReportTitle = useMemo(() => {
-    return reportCards.find((report) => report.key === activeReport)?.title || "Report";
+    return (
+      reportCards.find((report) => report.key === activeReport)?.title ||
+      "Report"
+    );
   }, [activeReport]);
 
   const getPrintColumns = () => {
@@ -592,10 +674,33 @@ function Reports() {
         "Category",
         "Supplier",
         "Stock Status",
-        "Current Stock",
-        "Low Alert",
+        "Total Stock",
+        "Batch Count",
+        "Price Range",
+        "Stock Value",
+        "Stock Cost",
         "Qty Sold",
         "Sales Value",
+        "Remark",
+      ];
+    }
+
+    if (activeReport === "stockBatches") {
+      return [
+        "Product",
+        "SKU",
+        "Category",
+        "Supplier",
+        "Buying Price",
+        "Selling Price",
+        "Current Stock",
+        "Original Stock",
+        "Selling Stock Value",
+        "Buying Stock Value",
+        "Potential Profit",
+        "Status",
+        "Batch Note",
+        "Created",
         "Remark",
       ];
     }
@@ -671,10 +776,33 @@ function Reports() {
         row.supplier_name || "-",
         getStockConditionLabel(row),
         row.stock_quantity,
-        row.low_stock_alert,
+        row.batch_count,
+        getProductPriceRange(row),
+        money(row.stock_value_at_selling_price),
+        money(row.stock_cost_value),
         row.quantity_sold,
         money(row.sales_value),
         getProductRemark(row),
+      ];
+    }
+
+    if (activeReport === "stockBatches") {
+      return [
+        row.product_name,
+        row.sku || "-",
+        row.category_name || "-",
+        row.supplier_name || "-",
+        money(row.buying_price),
+        money(row.selling_price),
+        row.quantity,
+        row.original_quantity,
+        money(row.selling_stock_value),
+        money(row.buying_stock_value),
+        money(row.potential_profit_value),
+        getBatchStatusLabel(row),
+        row.batch_note || "-",
+        formatDate(row.created_at),
+        getBatchRemark(row),
       ];
     }
 
@@ -844,7 +972,10 @@ function Reports() {
               <tr>${tableHead}</tr>
             </thead>
             <tbody>
-              ${tableRows || `<tr><td colspan="${columns.length}">No records found</td></tr>`}
+              ${
+                tableRows ||
+                `<tr><td colspan="${columns.length}">No records found</td></tr>`
+              }
             </tbody>
           </table>
 
@@ -880,9 +1011,25 @@ function Reports() {
     if (activeReport === "products") {
       items.push(["Total Products", summary.productCount]);
       items.push(["Total Stock Units", summary.totalStock]);
+      items.push(["Stock Batches", summary.batchCount]);
       items.push(["Low Stock Products", summary.lowStockCount]);
       items.push(["Completed Sale Qty", summary.quantitySold]);
       items.push(["Completed Sales Value", money(summary.salesValue)]);
+      items.push(["Current Stock Value", money(summary.stockValue)]);
+      items.push(["Current Stock Cost", money(summary.stockCostValue)]);
+    }
+
+    if (activeReport === "stockBatches") {
+      items.push(["Total Batches", summary.batchCount]);
+      items.push(["Current Stock Units", summary.totalCurrentStock]);
+      items.push(["Original Stock Units", summary.totalOriginalStock]);
+      items.push(["Low Stock Batches", summary.lowStockBatchCount]);
+      items.push(["Selling Stock Value", money(summary.sellingStockValue)]);
+      items.push(["Buying Stock Value", money(summary.buyingStockValue)]);
+      items.push([
+        "Potential Profit Value",
+        money(summary.potentialProfitValue),
+      ]);
     }
 
     if (activeReport === "stock") {
@@ -962,7 +1109,9 @@ function Reports() {
                 <option value="pending">Pending Sales / Reserved Stock</option>
                 <option value="cancelled">Cancelled Pending Sales</option>
                 <option value="returned">Fully Returned Sales</option>
-                <option value="partially_returned">Partially Returned Sales</option>
+                <option value="partially_returned">
+                  Partially Returned Sales
+                </option>
               </select>
             </div>
 
@@ -981,7 +1130,9 @@ function Reports() {
           </div>
         )}
 
-        {(activeReport === "products" || activeReport === "profit") && (
+        {(activeReport === "products" ||
+          activeReport === "stockBatches" ||
+          activeReport === "profit") && (
           <>
             <div className="form-row">
               <SearchableSelect
@@ -1015,23 +1166,33 @@ function Reports() {
               />
             </div>
 
-            <label>Search Product</label>
+            <label>
+              {activeReport === "stockBatches"
+                ? "Search Product / SKU / Batch Note"
+                : "Search Product"}
+            </label>
             <input
               value={filters.search}
-              placeholder="Search product name or SKU..."
+              placeholder={
+                activeReport === "stockBatches"
+                  ? "Search product name, SKU, barcode, or batch note..."
+                  : "Search product name or SKU..."
+              }
               onChange={(e) => updateFilter("search", e.target.value)}
             />
           </>
         )}
 
-        {activeReport === "products" && (
+        {(activeReport === "products" || activeReport === "stockBatches") && (
           <label className="checkbox-line report-checkbox">
             <input
               type="checkbox"
               checked={filters.lowStock}
               onChange={(e) => updateFilter("lowStock", e.target.checked)}
             />
-            Show only products at or below low stock alert
+            {activeReport === "stockBatches"
+              ? "Show only stock batches at or below low stock alert"
+              : "Show only products at or below low stock alert"}
           </label>
         )}
 
@@ -1051,7 +1212,9 @@ function Reports() {
                 <option value="sale">Sold Items</option>
                 <option value="pending_sale">Reserved for Pending Sale</option>
                 <option value="pending_cancel">Pending Sale Cancelled</option>
-                <option value="refund_return">Returned to Stock After Refund</option>
+                <option value="refund_return">
+                  Returned to Stock After Refund
+                </option>
                 <option value="damage">Damaged Stock Removed</option>
               </select>
             </div>
@@ -1192,7 +1355,10 @@ function Reports() {
             "Category",
             "Supplier",
             "Stock Status",
-            "Current Stock",
+            "Total Stock",
+            "Batches",
+            "Price Range",
+            "Stock Value",
             "Qty Sold",
             "Sales Value",
             "Remark",
@@ -1204,9 +1370,45 @@ function Reports() {
             row.supplier_name || "-",
             getStockConditionLabel(row),
             row.stock_quantity,
+            row.batch_count,
+            getProductPriceRange(row),
+            money(row.stock_value_at_selling_price),
             row.quantity_sold,
             money(row.sales_value),
             getProductRemark(row),
+          ])}
+        />
+      );
+    }
+
+    if (activeReport === "stockBatches") {
+      return (
+        <ReportTable
+          columns={[
+            "Product",
+            "SKU",
+            "Supplier",
+            "Buying Price",
+            "Selling Price",
+            "Current Stock",
+            "Original Stock",
+            "Stock Value",
+            "Potential Profit",
+            "Status",
+            "Remark",
+          ]}
+          rows={rows.map((row) => [
+            row.product_name,
+            row.sku || "-",
+            row.supplier_name || "-",
+            money(row.buying_price),
+            money(row.selling_price),
+            row.quantity,
+            row.original_quantity,
+            money(row.selling_stock_value),
+            money(row.potential_profit_value),
+            getBatchStatusLabel(row),
+            getBatchRemark(row),
           ])}
         />
       );
@@ -1286,6 +1488,7 @@ function Reports() {
           columns={[
             "Product",
             "SKU",
+            "Supplier",
             "Qty Sold",
             "Sales Value",
             "Buying Cost",
@@ -1296,6 +1499,7 @@ function Reports() {
           rows={rows.map((row) => [
             row.product_name,
             row.sku || "-",
+            row.supplier_name || "-",
             row.quantity_sold,
             money(row.sales_value),
             money(row.buying_cost),
@@ -1387,7 +1591,8 @@ function columnBadgeValue(column, value) {
   if (
     column === "Sale Status" ||
     column === "Stock Status" ||
-    column === "Risk"
+    column === "Risk" ||
+    column === "Status"
   ) {
     if (
       value === "Completed Sale" ||
@@ -1426,7 +1631,7 @@ function columnBadgeValue(column, value) {
 
 function ReportTable({ columns, rows }) {
   return (
-    <div className="table-wrapper">
+    <div className="table-wrapper report-table-wrapper">
       <table>
         <thead>
           <tr>
