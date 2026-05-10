@@ -261,7 +261,7 @@ function App() {
 
             {hasPermission("damages.view") && (
               <button
-                className={activePage === "damages" ? "active" : ""}
+                className={`nav-link ${activePage === "damages" ? "active" : ""}`}
                 onClick={() => setActivePage("damages")}
               >
                 Damaged Items
@@ -336,6 +336,8 @@ function App() {
               <p>Reports page coming soon.</p>
             </section>
           )}
+
+          {activePage === "damages" && <Damages />}
 
           {activePage === "settings" && (
             <Settings
