@@ -1808,3 +1808,112 @@ th {
   font-weight: 800;
   cursor: pointer;
 }
+
+/* SEARCHABLE DROPDOWN */
+
+.searchable-select-wrapper {
+  position: relative;
+  width: 100%;
+}
+
+.searchable-select-button {
+  width: 100%;
+  min-height: 44px;
+  padding: 12px 13px;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: #111827;
+  color: var(--text);
+  outline: none;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  text-align: left;
+}
+
+.searchable-select-button:hover {
+  border-color: var(--primary);
+}
+
+.searchable-select-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.searchable-select-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  background: #111827;
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  padding: 10px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+
+.searchable-select-search {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #0b1220;
+  color: var(--text);
+  outline: none;
+  margin-bottom: 8px;
+}
+
+.searchable-select-search:focus {
+  border-color: var(--primary);
+}
+
+.searchable-select-options {
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.searchable-select-option {
+  width: 100%;
+  padding: 10px 11px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.searchable-select-option:hover,
+.searchable-select-option.selected {
+  background: #1f2a44;
+}
+
+.searchable-select-empty {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.searchable-select-options::-webkit-scrollbar {
+  width: 7px;
+}
+
+.searchable-select-options::-webkit-scrollbar-track {
+  background: #0b1220;
+  border-radius: 999px;
+}
+
+.searchable-select-options::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 999px;
+}
+
+.searchable-select-options::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import api from "../api/api";
+import SearchableSelect from "../components/SearchableSelect";
 
 const PRODUCTS_PER_PAGE = 25;
 
@@ -488,17 +489,19 @@ function Products() {
             </div>
 
             <div className="product-filters">
-              <select
+              <SearchableSelect
                 value={selectedCategory}
-                onChange={(e) => setSelectedCategory(e.target.value)}
-              >
-                <option value="">All Categories</option>
-                {categories.map((category) => (
-                  <option key={category.id} value={category.id}>
-                    {category.name}
-                  </option>
-                ))}
-              </select>
+                onChange={setSelectedCategory}
+                placeholder="All Categories"
+                searchPlaceholder="Search categories..."
+                options={[
+                  { value: "", label: "All Categories" },
+                  ...categories.map((category) => ({
+                    value: category.id,
+                    label: category.name,
+                  })),
+                ]}
+              />
 
               <div className="search-box">
                 <input
@@ -800,18 +803,25 @@ function Products() {
               </div>
 
               <label>Category</label>
-              <select
-                name="categoryId"
+              <SearchableSelect
+                label="Category"
                 value={form.categoryId}
-                onChange={handleChange}
-              >
-                <option value="">No category</option>
-                {categories.map((category) => (
-                  <option key={category.id} value={category.id}>
-                    {category.name}
-                  </option>
-                ))}
-              </select>
+                onChange={(value) =>
+                  setForm({
+                    ...form,
+                    categoryId: value,
+                  })
+                }
+                placeholder="No category"
+                searchPlaceholder="Search categories..."
+                options={[
+                  { value: "", label: "No category" },
+                  ...categories.map((category) => ({
+                    value: category.id,
+                    label: category.name,
+                  })),
+                ]}
+              />
 
               <label>Description</label>
               <textarea
@@ -1125,17 +1135,20 @@ function Products() {
 
             <form className="product-form" onSubmit={handleSaveCategory}>
               <label>Select Existing Category</label>
-              <select
+              <SearchableSelect
+                label="Select Existing Category"
                 value={categoryForm.id}
-                onChange={(e) => handleCategorySelect(e.target.value)}
-              >
-                <option value="">Create new category</option>
-                {categories.map((category) => (
-                  <option key={category.id} value={category.id}>
-                    {category.name}
-                  </option>
-                ))}
-              </select>
+                onChange={handleCategorySelect}
+                placeholder="Create new category"
+                searchPlaceholder="Search categories..."
+                options={[
+                  { value: "", label: "Create new category" },
+                  ...categories.map((category) => ({
+                    value: category.id,
+                    label: category.name,
+                  })),
+                ]}
+              />
 
               <label>Category Name *</label>
               <input
