@@ -517,20 +517,17 @@ function Sales() {
                   <div className="sale-item-row" key={index}>
                     <div>
                       <label>Product</label>
-                      <select
+                      <SearchableSelect
+                        label="Product"
                         value={item.productId}
-                        onChange={(e) =>
-                          updateItem(index, "productId", e.target.value)
-                        }
-                        required
-                      >
-                        <option value="">Select product</option>
-                        {products.map((product) => (
-                          <option key={product.id} value={product.id}>
-                            {product.name} - Stock: {product.stock_quantity}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(value) => updateItem(index, "productId", value)}
+                        placeholder="Select product"
+                        searchPlaceholder="Search products..."
+                        options={products.map((product) => ({
+                          value: product.id,
+                          label: `${product.name} - Stock: ${product.stock_quantity}`,
+                        }))}
+                      />
                     </div>
 
                     <div>

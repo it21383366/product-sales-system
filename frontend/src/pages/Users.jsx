@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import api from "../api/api";
+import SearchableSelect from "../components/SearchableSelect";
 
 const USERS_PER_PAGE = 25;
 
@@ -561,19 +562,17 @@ function Users() {
               />
 
               <label>Role *</label>
-              <select
-                name="roleId"
-                value={form.roleId}
-                onChange={handleChange}
-                required
-              >
-                <option value="">Select role</option>
-                {assignableRoles.map((role) => (
-                    <option key={role.id} value={role.id}>
-                        {role.name}
-                    </option>
-                ))}
-              </select>
+              <SearchableSelect
+                label="Select User Role"
+                value={selectedPrivilegeRoleId}
+                onChange={handlePrivilegeRoleChange}
+                placeholder="Select role"
+                searchPlaceholder="Search roles..."
+                options={sortedRoles.map((role) => ({
+                  value: role.id,
+                  label: role.name,
+                }))}
+              />
 
               <div className="modal-actions">
                 <button type="button" className="secondary-btn" onClick={closeModals}>
@@ -710,17 +709,22 @@ function Users() {
 
             <div className="product-form">
                 <label>Select User Role</label>
-                <select
-                value={selectedPrivilegeRoleId}
-                onChange={(e) => handlePrivilegeRoleChange(e.target.value)}
-                >
-                <option value="">Select role</option>
-                {sortedRoles.map((role) => (
-                    <option key={role.id} value={role.id}>
-                        {role.name}
-                    </option>
-                ))}
-                </select>
+                <SearchableSelect
+                  label="Role *"
+                  value={form.roleId}
+                  onChange={(value) =>
+                    setForm({
+                      ...form,
+                      roleId: value,
+                    })
+                  }
+                  placeholder="Select role"
+                  searchPlaceholder="Search roles..."
+                  options={assignableRoles.map((role) => ({
+                    value: role.id,
+                    label: role.name,
+                  }))}
+                />
 
                 {selectedPrivilegeRoleId && (
                 <div className="permission-list">
