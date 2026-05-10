@@ -3,12 +3,58 @@ const cors = require("cors");
 const { Pool } = require("pg");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const path = require("path");
+const fs = require("fs");
+const multer = require("multer");
 require("dotenv").config();
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+const uploadsDir = path.join(__dirname, "uploads");
+
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir);
+}
+
+app.use("/uploads", express.static(uploadsDir));
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (req, file, cb) => {
+    const safeName = file.originalname.replace(/\s+/g, "-").toLowerCase();
+    cb(null, `${Date.now()}-${safeName}`);
+  },
+});
+
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = [
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/webp",
+    "image/svg+xml",
+    "image/x-icon",
+  ];
+
+  if (!allowedTypes.includes(file.mimetype)) {
+    return cb(new Error("Only image files are allowed"), false);
+  }
+
+  cb(null, true);
+};
+
+const upload = multer({
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: 2 * 1024 * 1024,
+  },
+});
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -285,6 +331,8 @@ app.get("/api/setup-database", async (req, res) => {
       ALTER TABLE sales
         ADD COLUMN IF NOT EXISTS returned_at TIMESTAMP;
 
+      ALTER TABLE organisations
+        ADD COLUMN IF NOT EXISTS icon_url TEXT;
         
     `);
 
@@ -5869,6 +5917,7 @@ app.get(
           phone,
           address,
           logo_url,
+          icon_url,
           currency,
           tax_name,
           tax_rate,
@@ -5906,6 +5955,66 @@ app.get(
   }
 );
 
+app.post(
+  "/api/settings/upload-icon",
+  authMiddleware,
+  requirePermission("settings.manage"),
+  upload.single("icon"),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          status: "error",
+          message: "Icon file is required",
+        });
+      }
+
+      const iconUrl = `/uploads/${req.file.filename}`;
+
+      const result = await pool.query(
+        `
+        UPDATE organisations
+        SET icon_url = $1,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2
+        RETURNING 
+          id,
+          name,
+          email,
+          phone,
+          address,
+          logo_url,
+          icon_url,
+          currency,
+          tax_name,
+          tax_rate,
+          invoice_prefix,
+          theme_color,
+          is_active,
+          created_at,
+          updated_at
+        `,
+        [iconUrl, req.user.organisation_id]
+      );
+
+      res.json({
+        status: "success",
+        message: "Icon uploaded successfully",
+        iconUrl,
+        settings: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Upload icon error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to upload icon",
+        error: error.message,
+      });
+    }
+  }
+);
+
 // Update organisation settings
 app.patch(
   "/api/settings",
@@ -5919,6 +6028,7 @@ app.patch(
         phone,
         address,
         logoUrl,
+        iconUrl,
         currency,
         taxName,
         taxRate,
@@ -5935,13 +6045,14 @@ app.patch(
           phone = COALESCE($3, phone),
           address = COALESCE($4, address),
           logo_url = COALESCE($5, logo_url),
-          currency = COALESCE($6, currency),
-          tax_name = COALESCE($7, tax_name),
-          tax_rate = COALESCE($8, tax_rate),
-          invoice_prefix = COALESCE($9, invoice_prefix),
-          theme_color = COALESCE($10, theme_color),
+          icon_url = COALESCE($6, icon_url),
+          currency = COALESCE($7, currency),
+          tax_name = COALESCE($8, tax_name),
+          tax_rate = COALESCE($9, tax_rate),
+          invoice_prefix = COALESCE($10, invoice_prefix),
+          theme_color = COALESCE($11, theme_color),
           updated_at = CURRENT_TIMESTAMP
-        WHERE id = $11
+        WHERE id = $12
         RETURNING 
           id,
           name,
@@ -5949,6 +6060,7 @@ app.patch(
           phone,
           address,
           logo_url,
+          icon_url,
           currency,
           tax_name,
           tax_rate,
@@ -5964,6 +6076,7 @@ app.patch(
           phone || null,
           address || null,
           logoUrl || null,
+          iconUrl || null,
           currency || null,
           taxName || null,
           taxRate !== undefined ? taxRate : null,
