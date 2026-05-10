@@ -235,6 +235,8 @@ app.get("/api/setup-database", async (req, res) => {
       ["products.delete", "Delete Products"],
       ["products.listing.edit", "Edit Product Listing"],
 
+      ["categories.manage", "Manage Categories"],
+
       ["suppliers.view", "View Suppliers"],
       ["suppliers.create", "Create Suppliers"],
       ["suppliers.edit", "Edit Suppliers"],
@@ -1066,6 +1068,8 @@ app.post(
             "products.delete",
             "products.listing.edit",
 
+            "categories.manage",
+
             "suppliers.view",
             "suppliers.create",
             "suppliers.edit",
@@ -1092,6 +1096,8 @@ app.post(
             "products.create",
             "products.edit",
             "products.listing.edit",
+
+            "categories.manage",
 
             "suppliers.view",
             "suppliers.create",
@@ -1124,6 +1130,8 @@ app.post(
             "products.create",
             "products.edit",
             "products.listing.edit",
+
+            "categories.manage",
 
             "suppliers.view",
             "suppliers.create",
@@ -1671,7 +1679,7 @@ app.get(
 app.post(
   "/api/categories",
   authMiddleware,
-  requirePermission("products.create"),
+  requirePermission("categories.manage"),
   async (req, res) => {
     try {
       const { name, description } = req.body;
@@ -1717,7 +1725,7 @@ app.post(
 app.patch(
   "/api/categories/:id",
   authMiddleware,
-  requirePermission("products.edit"),
+  requirePermission("categories.manage"),
   async (req, res) => {
     try {
       const { id } = req.params;
@@ -1764,10 +1772,28 @@ app.patch(
 app.delete(
   "/api/categories/:id",
   authMiddleware,
-  requirePermission("products.delete"),
+  requirePermission("categories.manage"),
   async (req, res) => {
     try {
       const { id } = req.params;
+
+      const usedCheck = await pool.query(
+        `
+        SELECT COUNT(*) AS count
+        FROM products
+        WHERE category_id = $1
+        AND organisation_id = $2
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      if (Number(usedCheck.rows[0].count) > 0) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "This category is currently used by products. Remove or change those product categories before deleting it.",
+        });
+      }
 
       const result = await pool.query(
         `
@@ -1784,6 +1810,30 @@ app.delete(
           message: "Category not found",
         });
       }
+
+      await pool.query(
+        `
+        INSERT INTO audit_logs (
+          organisation_id,
+          user_id,
+          action,
+          table_name,
+          record_id,
+          details
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          req.user.organisation_id,
+          req.user.id,
+          "deleted category",
+          "categories",
+          id,
+          JSON.stringify({
+            categoryName: result.rows[0].name,
+          }),
+        ]
+      );
 
       res.json({
         status: "success",
