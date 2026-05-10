@@ -284,6 +284,8 @@ app.get("/api/setup-database", async (req, res) => {
 
       ALTER TABLE sales
         ADD COLUMN IF NOT EXISTS returned_at TIMESTAMP;
+
+        
     `);
 
     const permissions = [
