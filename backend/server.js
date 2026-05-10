@@ -3,8 +3,6 @@ const cors = require("cors");
 const { Pool } = require("pg");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const path = require("path");
-const fs = require("fs");
 const multer = require("multer");
 require("dotenv").config();
 
@@ -13,44 +11,24 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const uploadsDir = path.join(__dirname, "uploads");
-
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir);
-}
-
-app.use("/uploads", express.static(uploadsDir));
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadsDir);
-  },
-  filename: (req, file, cb) => {
-    const safeName = file.originalname.replace(/\s+/g, "-").toLowerCase();
-    cb(null, `${Date.now()}-${safeName}`);
-  },
-});
-
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = [
-    "image/png",
-    "image/jpeg",
-    "image/jpg",
-    "image/webp",
-    "image/svg+xml",
-    "image/x-icon",
-  ];
-
-  if (!allowedTypes.includes(file.mimetype)) {
-    return cb(new Error("Only image files are allowed"), false);
-  }
-
-  cb(null, true);
-};
-
 const upload = multer({
-  storage,
-  fileFilter,
+  storage: multer.memoryStorage(),
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = [
+      "image/png",
+      "image/jpeg",
+      "image/jpg",
+      "image/webp",
+      "image/svg+xml",
+      "image/x-icon",
+    ];
+
+    if (!allowedTypes.includes(file.mimetype)) {
+      return cb(new Error("Only image files are allowed"), false);
+    }
+
+    cb(null, true);
+  },
   limits: {
     fileSize: 2 * 1024 * 1024,
   },
@@ -333,6 +311,12 @@ app.get("/api/setup-database", async (req, res) => {
 
       ALTER TABLE organisations
         ADD COLUMN IF NOT EXISTS icon_url TEXT;
+
+      ALTER TABLE organisations
+        ADD COLUMN IF NOT EXISTS icon_data TEXT;
+
+      ALTER TABLE organisations
+        ADD COLUMN IF NOT EXISTS icon_mime TEXT;
 
       CREATE TABLE IF NOT EXISTS product_stock_batches (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -6838,6 +6822,8 @@ app.get(
           address,
           logo_url,
           icon_url,
+          icon_data,
+          icon_mime,
           currency,
           tax_name,
           tax_rate,
@@ -6859,9 +6845,22 @@ app.get(
         });
       }
 
+      const settings = result.rows[0];
+
+      const iconDataUrl =
+        settings.icon_data && settings.icon_mime
+          ? `data:${settings.icon_mime};base64,${settings.icon_data}`
+          : settings.icon_url || null;
+
+      delete settings.icon_data;
+      delete settings.icon_mime;
+
       res.json({
         status: "success",
-        settings: result.rows[0],
+        settings: {
+          ...settings,
+          icon_url: iconDataUrl,
+        },
       });
     } catch (error) {
       console.error("Get settings error:", error.message);
@@ -6889,14 +6888,18 @@ app.post(
         });
       }
 
-      const iconUrl = `/uploads/${req.file.filename}`;
+      const iconData = req.file.buffer.toString("base64");
+      const iconMime = req.file.mimetype;
+      const iconDataUrl = `data:${iconMime};base64,${iconData}`;
 
       const result = await pool.query(
         `
         UPDATE organisations
-        SET icon_url = $1,
+        SET icon_url = NULL,
+            icon_data = $1,
+            icon_mime = $2,
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $2
+        WHERE id = $3
         RETURNING 
           id,
           name,
@@ -6905,6 +6908,8 @@ app.post(
           address,
           logo_url,
           icon_url,
+          icon_data,
+          icon_mime,
           currency,
           tax_name,
           tax_rate,
@@ -6914,14 +6919,22 @@ app.post(
           created_at,
           updated_at
         `,
-        [iconUrl, req.user.organisation_id]
+        [iconData, iconMime, req.user.organisation_id]
       );
+
+      const settings = result.rows[0];
+
+      delete settings.icon_data;
+      delete settings.icon_mime;
 
       res.json({
         status: "success",
         message: "Icon uploaded successfully",
-        iconUrl,
-        settings: result.rows[0],
+        iconUrl: iconDataUrl,
+        settings: {
+          ...settings,
+          icon_url: iconDataUrl,
+        },
       });
     } catch (error) {
       console.error("Upload icon error:", error.message);
@@ -6974,6 +6987,7 @@ app.patch(
           updated_at = CURRENT_TIMESTAMP
         WHERE id = $12
         RETURNING 
+          RETURNING 
           id,
           name,
           email,
@@ -6981,6 +6995,8 @@ app.patch(
           address,
           logo_url,
           icon_url,
+          icon_data,
+          icon_mime,
           currency,
           tax_name,
           tax_rate,
@@ -7013,10 +7029,23 @@ app.patch(
         });
       }
 
+      const settings = result.rows[0];
+
+      const iconDataUrl =
+        settings.icon_data && settings.icon_mime
+          ? `data:${settings.icon_mime};base64,${settings.icon_data}`
+          : settings.icon_url || null;
+
+      delete settings.icon_data;
+      delete settings.icon_mime;
+
       res.json({
         status: "success",
         message: "Settings updated successfully",
-        settings: result.rows[0],
+        settings: {
+          ...settings,
+          icon_url: iconDataUrl,
+        },
       });
     } catch (error) {
       console.error("Update settings error:", error.message);
