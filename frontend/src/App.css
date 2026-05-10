@@ -3216,3 +3216,56 @@ button {
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
+
+/* LOG TABLE COLUMN FILTERS */
+.logs-table-wrapper table {
+  min-width: 1200px;
+}
+
+.logs-table-wrapper th {
+  vertical-align: top;
+}
+
+.logs-table-wrapper td:nth-child(5) {
+  min-width: 520px;
+  max-width: 760px;
+  white-space: normal;
+}
+
+.log-filter-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.log-filter-heading span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.log-filter-heading input {
+  width: 100%;
+  min-width: 110px;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: #0b1220;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  outline: none;
+}
+
+.log-filter-heading input::placeholder {
+  color: #64748b;
+}
+
+.log-filter-heading input:focus {
+  border-color: var(--primary);
+}
+
+.logs-table-wrapper th:nth-child(5) .log-filter-heading input {
+  min-width: 260px;
+}

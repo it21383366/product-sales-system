@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import api from "../api/api";
 
 const LOGS_PER_PAGE = 25;
@@ -14,6 +14,15 @@ function Logs() {
   });
   const [tableName, setTableName] = useState("");
   const [error, setError] = useState("");
+
+  const [columnFilters, setColumnFilters] = useState({
+    user: "",
+    role: "",
+    action: "",
+    area: "",
+    details: "",
+    date: "",
+  });
 
   const fetchLogs = async (pageNumber = page) => {
     try {
@@ -136,9 +145,9 @@ function Logs() {
         return `Product created: ${details.productName || "Unknown product"}`;
 
       case "deleted product":
-        return `Product deleted: ${
-          details.productName || "Unknown product"
-        }${details.sku ? ` (${details.sku})` : ""}`;
+        return `Product deleted: ${details.productName || "Unknown product"}${
+          details.sku ? ` (${details.sku})` : ""
+        }`;
 
       case "edited product listing":
         return `Product listing updated: ${
@@ -359,6 +368,43 @@ function Logs() {
     );
   };
 
+  const updateColumnFilter = (name, value) => {
+    setColumnFilters((current) => ({
+      ...current,
+      [name]: value,
+    }));
+  };
+
+  const textIncludes = (value, search) => {
+    if (!search) return true;
+
+    return String(value || "")
+      .toLowerCase()
+      .includes(String(search).toLowerCase());
+  };
+
+  const filteredLogs = useMemo(() => {
+    return logs.filter((log) => {
+      const userText = log.full_name || "Unknown User";
+      const roleText = log.role_name || "Unknown Role";
+      const actionText = getActionLabel(log.action);
+      const areaText = getAreaLabel(log.table_name);
+      const detailsText = `${getReadableSummary(log)} ${getDetailRows(log)
+        .map(([label, value]) => `${label} ${value}`)
+        .join(" ")}`;
+      const dateText = new Date(log.created_at).toLocaleString();
+
+      return (
+        textIncludes(userText, columnFilters.user) &&
+        textIncludes(roleText, columnFilters.role) &&
+        textIncludes(actionText, columnFilters.action) &&
+        textIncludes(areaText, columnFilters.area) &&
+        textIncludes(detailsText, columnFilters.details) &&
+        textIncludes(dateText, columnFilters.date)
+      );
+    });
+  }, [logs, columnFilters]);
+
   return (
     <div className="logs-page">
       <div className="page-header">
@@ -395,8 +441,8 @@ function Logs() {
           <div>
             <h3>Activity History</h3>
             <p>
-              {pagination.total} logs found · Page {pagination.page} of{" "}
-              {pagination.totalPages}
+              {filteredLogs.length} shown from {logs.length} loaded logs · Page{" "}
+              {pagination.page} of {pagination.totalPages}
             </p>
           </div>
         </div>
@@ -405,23 +451,94 @@ function Logs() {
           <table>
             <thead>
               <tr>
-                <th>User</th>
-                <th>Role</th>
-                <th>Action</th>
-                <th>Area</th>
-                <th>Details</th>
-                <th>Date / Time</th>
+                <th>
+                  <div className="log-filter-heading">
+                    <span>User</span>
+                    <input
+                      value={columnFilters.user}
+                      placeholder="Search user..."
+                      onChange={(e) =>
+                        updateColumnFilter("user", e.target.value)
+                      }
+                    />
+                  </div>
+                </th>
+
+                <th>
+                  <div className="log-filter-heading">
+                    <span>Role</span>
+                    <input
+                      value={columnFilters.role}
+                      placeholder="Search role..."
+                      onChange={(e) =>
+                        updateColumnFilter("role", e.target.value)
+                      }
+                    />
+                  </div>
+                </th>
+
+                <th>
+                  <div className="log-filter-heading">
+                    <span>Action</span>
+                    <input
+                      value={columnFilters.action}
+                      placeholder="Search action..."
+                      onChange={(e) =>
+                        updateColumnFilter("action", e.target.value)
+                      }
+                    />
+                  </div>
+                </th>
+
+                <th>
+                  <div className="log-filter-heading">
+                    <span>Area</span>
+                    <input
+                      value={columnFilters.area}
+                      placeholder="Search area..."
+                      onChange={(e) =>
+                        updateColumnFilter("area", e.target.value)
+                      }
+                    />
+                  </div>
+                </th>
+
+                <th>
+                  <div className="log-filter-heading">
+                    <span>Details</span>
+                    <input
+                      value={columnFilters.details}
+                      placeholder="Search details..."
+                      onChange={(e) =>
+                        updateColumnFilter("details", e.target.value)
+                      }
+                    />
+                  </div>
+                </th>
+
+                <th>
+                  <div className="log-filter-heading">
+                    <span>Date / Time</span>
+                    <input
+                      value={columnFilters.date}
+                      placeholder="Search date..."
+                      onChange={(e) =>
+                        updateColumnFilter("date", e.target.value)
+                      }
+                    />
+                  </div>
+                </th>
               </tr>
             </thead>
 
             <tbody>
-              {logs.length === 0 && (
+              {filteredLogs.length === 0 && (
                 <tr>
                   <td colSpan="6">No logs found</td>
                 </tr>
               )}
 
-              {logs.map((log) => (
+              {filteredLogs.map((log) => (
                 <tr key={log.id}>
                   <td>{log.full_name || "Unknown User"}</td>
                   <td>{log.role_name || "Unknown Role"}</td>
