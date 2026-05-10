@@ -2074,24 +2074,22 @@ th {
 }
 
 .report-summary-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, max-content));
-  gap: 14px;
-  width: 100%;
-  align-items: stretch;
-  justify-content: start;
+  display: grid !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  gap: 14px !important;
+  width: 100% !important;
+  align-items: stretch !important;
 }
 
 .report-summary-card {
-  min-width: 230px;
-  width: max-content;
-  max-width: 100%;
-  min-height: 84px;
-  padding: 15px 18px;
-  border-radius: 15px;
-  border: 1px solid var(--border-light);
-  background: #172033;
-  overflow: visible;
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: 96px !important;
+  padding: 16px !important;
+  border-radius: 15px !important;
+  border: 1px solid var(--border-light) !important;
+  background: #172033 !important;
+  overflow: visible !important;
 }
 
 .report-summary-card span {
@@ -2106,12 +2104,13 @@ th {
 }
 
 .report-summary-card strong {
-  display: block;
-  color: var(--text);
-  font-size: 24px;
-  font-weight: 900;
-  line-height: 1.15;
-  white-space: nowrap;
+  display: block !important;
+  color: var(--text) !important;
+  font-size: 24px !important;
+  font-weight: 900 !important;
+  line-height: 1.15 !important;
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
 }
 
 .report-table-wrapper {
@@ -2591,13 +2590,20 @@ th {
 }
 
 @media (max-width: 560px) {
-  .reports-sidebar,
-  .report-summary-grid {
+  .reports-sidebar {
     grid-template-columns: 1fr;
   }
+}
 
-  .report-summary-card {
-    min-height: auto;
+@media (max-width: 1100px) {
+  .report-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 600px) {
+  .report-summary-grid {
+    grid-template-columns: 1fr !important;
   }
 }
 
@@ -3015,21 +3021,6 @@ button {
   .reports-sidebar {
     grid-template-columns: 1fr;
   }
-
-  @media (max-width: 600px) {
-  .report-summary-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .report-summary-card {
-    width: 100%;
-    min-width: 0;
-  }
-
-  .report-summary-card strong {
-    white-space: normal;
-  }
-}
 
   .dashboard-kpi-card strong,
   .report-summary-card strong {
