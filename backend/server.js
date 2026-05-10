@@ -333,7 +333,28 @@ app.get("/api/setup-database", async (req, res) => {
 
       ALTER TABLE organisations
         ADD COLUMN IF NOT EXISTS icon_url TEXT;
-        
+
+      CREATE TABLE IF NOT EXISTS product_stock_batches (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        organisation_id UUID REFERENCES organisations(id) ON DELETE CASCADE,
+        product_id UUID REFERENCES products(id) ON DELETE CASCADE,
+        supplier_id UUID REFERENCES suppliers(id) ON DELETE SET NULL,
+        buying_price NUMERIC(12,2) DEFAULT 0,
+        selling_price NUMERIC(12,2) NOT NULL,
+        quantity INTEGER NOT NULL DEFAULT 0,
+        original_quantity INTEGER NOT NULL DEFAULT 0,
+        batch_note TEXT,
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      ALTER TABLE sale_items
+        ADD COLUMN IF NOT EXISTS stock_batch_id UUID REFERENCES product_stock_batches(id) ON DELETE SET NULL;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS unique_active_product_sku_per_org
+      ON products (organisation_id, LOWER(sku))
+      WHERE sku IS NOT NULL AND sku <> '' AND is_active = true;
     `);
 
     const permissions = [
@@ -352,6 +373,7 @@ app.get("/api/setup-database", async (req, res) => {
       ["products.edit", "Edit Products"],
       ["products.delete", "Delete Products"],
       ["products.listing.edit", "Edit Product Listing"],
+      ["products.stock.batch.view", "View Product Stock Batches"],
 
       ["categories.manage", "Manage Categories"],
 
@@ -2198,6 +2220,34 @@ app.delete(
   }
 );
 
+const syncProductStockFromBatches = async (client, productId, organisationId) => {
+  const stockResult = await client.query(
+    `
+    SELECT COALESCE(SUM(quantity), 0) AS total_stock
+    FROM product_stock_batches
+    WHERE product_id = $1
+    AND organisation_id = $2
+    AND is_active = true
+    `,
+    [productId, organisationId]
+  );
+
+  const totalStock = Number(stockResult.rows[0].total_stock || 0);
+
+  await client.query(
+    `
+    UPDATE products
+    SET stock_quantity = $1,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = $2
+    AND organisation_id = $3
+    `,
+    [totalStock, productId, organisationId]
+  );
+
+  return totalStock;
+};
+
 // =========================
 // PRODUCTS API
 // =========================
@@ -2215,11 +2265,35 @@ app.get(
         SELECT 
           products.*,
           suppliers.name AS supplier_name,
-          categories.name AS category_name
+          categories.name AS category_name,
+          COALESCE(batch_totals.total_batch_stock, products.stock_quantity, 0) AS stock_quantity,
+          COALESCE(batch_prices.highest_selling_price, products.selling_price, 0) AS highest_selling_price,
+          COALESCE(batch_prices.lowest_selling_price, products.selling_price, 0) AS lowest_selling_price,
+          COALESCE(batch_prices.batch_count, 0) AS batch_count
         FROM products
         LEFT JOIN suppliers ON products.supplier_id = suppliers.id
         LEFT JOIN categories ON products.category_id = categories.id
+        LEFT JOIN (
+          SELECT 
+            product_id,
+            SUM(quantity) AS total_batch_stock
+          FROM product_stock_batches
+          WHERE is_active = true
+          GROUP BY product_id
+        ) AS batch_totals ON products.id = batch_totals.product_id
+        LEFT JOIN (
+          SELECT 
+            product_id,
+            MAX(selling_price) AS highest_selling_price,
+            MIN(selling_price) AS lowest_selling_price,
+            COUNT(*) AS batch_count
+          FROM product_stock_batches
+          WHERE is_active = true
+          AND quantity > 0
+          GROUP BY product_id
+        ) AS batch_prices ON products.id = batch_prices.product_id
         WHERE products.organisation_id = $1
+        AND products.is_active = true
       `;
 
       const values = [req.user.organisation_id];
@@ -2250,7 +2324,7 @@ app.get(
       }
 
       if (lowStock === "true") {
-        query += ` AND products.stock_quantity <= products.low_stock_alert`;
+        query += ` AND COALESCE(batch_totals.total_batch_stock, products.stock_quantity, 0) <= products.low_stock_alert`;
       }
 
       query += ` ORDER BY products.created_at DESC`;
@@ -2351,6 +2425,27 @@ app.post(
 
       await client.query("BEGIN");
 
+      if (sku && sku.trim()) {
+        const skuCheck = await client.query(
+          `
+          SELECT id
+          FROM products
+          WHERE organisation_id = $1
+          AND LOWER(sku) = LOWER($2)
+          AND is_active = true
+          `,
+          [req.user.organisation_id, sku.trim()]
+        );
+
+        if (skuCheck.rows.length > 0) {
+          await client.query("ROLLBACK");
+          return res.status(409).json({
+            status: "error",
+            message: "SKU already exists. Please use a unique SKU.",
+          });
+        }
+      }
+
       if (supplierId) {
         const supplierCheck = await client.query(
           `
@@ -2387,6 +2482,8 @@ app.post(
         }
       }
 
+      const quantityNumber = Number(stockQuantity || 0);
+
       const productResult = await client.query(
         `
         INSERT INTO products (
@@ -2411,12 +2508,12 @@ app.post(
           supplierId || null,
           categoryId || null,
           name,
-          sku || null,
+          sku?.trim() || null,
           barcode || null,
           description || null,
-          buyingPrice || 0,
-          sellingPrice,
-          stockQuantity || 0,
+          Number(buyingPrice || 0),
+          Number(sellingPrice),
+          quantityNumber,
           lowStockAlert || 5,
           imageUrl || null,
         ]
@@ -2424,7 +2521,33 @@ app.post(
 
       const product = productResult.rows[0];
 
-      if ((stockQuantity || 0) > 0) {
+      if (quantityNumber > 0) {
+        const batchResult = await client.query(
+          `
+          INSERT INTO product_stock_batches (
+            organisation_id,
+            product_id,
+            supplier_id,
+            buying_price,
+            selling_price,
+            quantity,
+            original_quantity,
+            batch_note
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
+          RETURNING *
+          `,
+          [
+            req.user.organisation_id,
+            product.id,
+            supplierId || null,
+            Number(buyingPrice || 0),
+            Number(sellingPrice),
+            quantityNumber,
+            "Initial product stock",
+          ]
+        );
+
         await client.query(
           `
           INSERT INTO stock_movements (
@@ -2435,18 +2558,18 @@ app.post(
             reason,
             created_by
           )
-          VALUES ($1, $2, 'initial_stock', $3, 'Initial product stock', $4)
+          VALUES ($1, $2, 'initial_stock', $3, $4, $5)
           `,
           [
             req.user.organisation_id,
             product.id,
-            stockQuantity || 0,
+            quantityNumber,
+            `Initial product stock - Batch ${batchResult.rows[0].id}`,
             req.user.id,
           ]
         );
       }
 
-      // Audit log for product creation
       await client.query(
         `
         INSERT INTO audit_logs (
@@ -2483,6 +2606,13 @@ app.post(
       });
     } catch (error) {
       await client.query("ROLLBACK");
+
+      if (error.code === "23505") {
+        return res.status(409).json({
+          status: "error",
+          message: "SKU already exists. Please use a unique SKU.",
+        });
+      }
 
       console.error("Create product error:", error.message);
 
@@ -2617,7 +2747,15 @@ app.patch(
 
     try {
       const { id } = req.params;
-      const { movementType, quantity, reason } = req.body;
+      const {
+        movementType,
+        quantity,
+        reason,
+        buyingPrice,
+        sellingPrice,
+        supplierId,
+        batchNote,
+      } = req.body;
 
       const quantityNumber = Number(quantity);
 
@@ -2646,9 +2784,10 @@ app.patch(
 
       const productCheck = await client.query(
         `
-        SELECT id, name, sku, stock_quantity
+        SELECT id, name, sku, stock_quantity, buying_price, selling_price, supplier_id
         FROM products
         WHERE id = $1 AND organisation_id = $2
+        AND is_active = true
         `,
         [id, req.user.organisation_id]
       );
@@ -2662,38 +2801,163 @@ app.patch(
       }
 
       const productBeforeUpdate = productCheck.rows[0];
-      const currentStock = Number(productBeforeUpdate.stock_quantity);
+      const currentStock = Number(productBeforeUpdate.stock_quantity || 0);
 
-      let newStock;
-      let movementQuantity;
+      let movementQuantity = 0;
 
       if (movementType === "increase") {
-        newStock = currentStock + quantityNumber;
+        const finalBuyingPrice =
+          buyingPrice !== undefined
+            ? Number(buyingPrice)
+            : Number(productBeforeUpdate.buying_price || 0);
+
+        const finalSellingPrice =
+          sellingPrice !== undefined
+            ? Number(sellingPrice)
+            : Number(productBeforeUpdate.selling_price || 0);
+
+        if (finalSellingPrice <= 0) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message: "Selling price must be greater than 0 for new stock batch",
+          });
+        }
+
+        const finalSupplierId = supplierId || productBeforeUpdate.supplier_id || null;
+
+        await client.query(
+          `
+          INSERT INTO product_stock_batches (
+            organisation_id,
+            product_id,
+            supplier_id,
+            buying_price,
+            selling_price,
+            quantity,
+            original_quantity,
+            batch_note
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
+          `,
+          [
+            req.user.organisation_id,
+            id,
+            finalSupplierId,
+            finalBuyingPrice,
+            finalSellingPrice,
+            quantityNumber,
+            batchNote || reason || "Stock added",
+          ]
+        );
+
         movementQuantity = quantityNumber;
-      } else if (movementType === "decrease") {
-        newStock = currentStock - quantityNumber;
+      }
+
+      if (movementType === "decrease") {
+        let remainingToRemove = quantityNumber;
+
+        const batchesResult = await client.query(
+          `
+          SELECT *
+          FROM product_stock_batches
+          WHERE product_id = $1
+          AND organisation_id = $2
+          AND is_active = true
+          AND quantity > 0
+          ORDER BY selling_price DESC, created_at ASC
+          `,
+          [id, req.user.organisation_id]
+        );
+
+        const availableStock = batchesResult.rows.reduce(
+          (sum, batch) => sum + Number(batch.quantity || 0),
+          0
+        );
+
+        if (availableStock < quantityNumber) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message: `Stock cannot be negative. Available stock: ${availableStock}`,
+          });
+        }
+
+        for (const batch of batchesResult.rows) {
+          if (remainingToRemove <= 0) break;
+
+          const deductQty = Math.min(Number(batch.quantity), remainingToRemove);
+
+          await client.query(
+            `
+            UPDATE product_stock_batches
+            SET quantity = quantity - $1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2
+            `,
+            [deductQty, batch.id]
+          );
+
+          remainingToRemove -= deductQty;
+        }
+
         movementQuantity = -quantityNumber;
-      } else {
-        newStock = quantityNumber;
+      }
+
+      if (movementType === "set") {
+        await client.query(
+          `
+          UPDATE product_stock_batches
+          SET quantity = 0,
+              is_active = false,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE product_id = $1
+          AND organisation_id = $2
+          `,
+          [id, req.user.organisation_id]
+        );
+
+        await client.query(
+          `
+          INSERT INTO product_stock_batches (
+            organisation_id,
+            product_id,
+            supplier_id,
+            buying_price,
+            selling_price,
+            quantity,
+            original_quantity,
+            batch_note
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
+          `,
+          [
+            req.user.organisation_id,
+            id,
+            productBeforeUpdate.supplier_id || null,
+            Number(buyingPrice || productBeforeUpdate.buying_price || 0),
+            Number(sellingPrice || productBeforeUpdate.selling_price || 0),
+            quantityNumber,
+            batchNote || reason || "Stock manually set",
+          ]
+        );
+
         movementQuantity = quantityNumber - currentStock;
       }
 
-      if (newStock < 0) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          status: "error",
-          message: "Stock cannot be negative",
-        });
-      }
+      const newStock = await syncProductStockFromBatches(
+        client,
+        id,
+        req.user.organisation_id
+      );
 
       const productResult = await client.query(
         `
-        UPDATE products
-        SET stock_quantity = $1, updated_at = CURRENT_TIMESTAMP
-        WHERE id = $2 AND organisation_id = $3
-        RETURNING *
+        SELECT *
+        FROM products
+        WHERE id = $1 AND organisation_id = $2
         `,
-        [newStock, id, req.user.organisation_id]
+        [id, req.user.organisation_id]
       );
 
       await client.query(
@@ -2744,6 +3008,8 @@ app.patch(
             movementQuantity,
             previousStock: currentStock,
             newStock,
+            buyingPrice,
+            sellingPrice,
             reason: reason || "Manual stock adjustment",
           }),
         ]
@@ -2783,7 +3049,9 @@ app.delete(
 
       const result = await pool.query(
         `
-        DELETE FROM products
+        UPDATE products
+        SET is_active = false,
+            updated_at = CURRENT_TIMESTAMP
         WHERE id = $1 AND organisation_id = $2
         RETURNING *
         `,
@@ -2797,6 +3065,41 @@ app.delete(
         });
       }
 
+      await pool.query(
+        `
+        UPDATE product_stock_batches
+        SET is_active = false,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE product_id = $1
+        AND organisation_id = $2
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      await pool.query(
+        `
+        INSERT INTO audit_logs (
+          organisation_id,
+          user_id,
+          action,
+          table_name,
+          record_id,
+          details
+        )
+        VALUES ($1, $2, 'deleted product', 'products', $3, $4)
+        `,
+        [
+          req.user.organisation_id,
+          req.user.id,
+          id,
+          JSON.stringify({
+            productName: result.rows[0].name,
+            sku: result.rows[0].sku,
+            softDelete: true,
+          }),
+        ]
+      );
+
       res.json({
         status: "success",
         message: "Product deleted successfully",
@@ -2808,6 +3111,47 @@ app.delete(
       res.status(500).json({
         status: "error",
         message: "Failed to delete product",
+        error: error.message,
+      });
+    }
+  }
+);
+
+app.get(
+  "/api/products/:id/stock-batches",
+  authMiddleware,
+  requirePermission("products.view"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const result = await pool.query(
+        `
+        SELECT
+          product_stock_batches.*,
+          suppliers.name AS supplier_name
+        FROM product_stock_batches
+        LEFT JOIN suppliers ON product_stock_batches.supplier_id = suppliers.id
+        WHERE product_stock_batches.product_id = $1
+        AND product_stock_batches.organisation_id = $2
+        AND product_stock_batches.is_active = true
+        AND product_stock_batches.quantity > 0
+        ORDER BY product_stock_batches.selling_price DESC,
+                 product_stock_batches.created_at ASC
+        `,
+        [id, req.user.organisation_id]
+      );
+
+      res.json({
+        status: "success",
+        batches: result.rows,
+      });
+    } catch (error) {
+      console.error("Get product stock batches error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to get product stock batches",
         error: error.message,
       });
     }
