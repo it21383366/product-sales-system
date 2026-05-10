@@ -58,18 +58,30 @@ function Sales() {
   }, [sales, page]);
 
   const fetchSales = async () => {
-    const response = await api.get("/api/sales");
-    setSales(response.data.sales);
+    try {
+      const response = await api.get("/api/sales");
+      setSales(response.data.sales);
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to load sales");
+    }
   };
 
   const fetchProducts = async () => {
-    const response = await api.get("/api/products");
-    setProducts(response.data.products);
+    try {
+      const response = await api.get("/api/products");
+      setProducts(response.data.products);
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to load products");
+    }
   };
 
   const fetchSettings = async () => {
-    const response = await api.get("/api/settings");
-    setSettings(response.data.settings);
+    try {
+      const response = await api.get("/api/settings");
+      setSettings(response.data.settings);
+    } catch (err) {
+      console.error("Failed to load settings", err);
+    }
   };
 
   useEffect(() => {
@@ -84,7 +96,10 @@ function Sales() {
 
   const subtotal = form.items.reduce((sum, item) => {
     const product = getProduct(item.productId);
-    if (!product) return sum;
+
+    if (!product) {
+      return sum;
+    }
 
     return sum + Number(product.selling_price) * Number(item.quantity || 0);
   }, 0);
@@ -298,6 +313,7 @@ function Sales() {
       }
 
       closeModals();
+
       await fetchSales();
       await fetchProducts();
 
@@ -341,7 +357,9 @@ function Sales() {
 
   const submitCompletePending = async () => {
     try {
-      if (!selectedPendingSale) return;
+      if (!selectedPendingSale) {
+        return;
+      }
 
       const balance = Number(selectedPendingSale.balance_amount || 0);
 
@@ -391,7 +409,9 @@ function Sales() {
 
   const submitCancelPending = async () => {
     try {
-      if (!selectedPendingSale) return;
+      if (!selectedPendingSale) {
+        return;
+      }
 
       if (!cancelReason.trim()) {
         setError("Cancel reason is required");
@@ -442,12 +462,12 @@ function Sales() {
     const rows = (sale.items || [])
       .map(
         (item) => `
-        <tr>
-          <td>${item.productName || item.product_name}</td>
-          <td>${item.quantity}</td>
-          <td>$${Number(item.totalPrice || item.total_price).toFixed(2)}</td>
-        </tr>
-      `
+          <tr>
+            <td>${item.productName || item.product_name}</td>
+            <td>${item.quantity}</td>
+            <td>$${Number(item.totalPrice || item.total_price).toFixed(2)}</td>
+          </tr>
+        `
       )
       .join("");
 
@@ -533,6 +553,7 @@ function Sales() {
             }
           </style>
         </head>
+
         <body>
           <div class="center">
             <h2>${storeName}</h2>
@@ -621,7 +642,10 @@ function Sales() {
 
           {(hasPermission("sales.create") ||
             hasPermission("sales.pending.create")) && (
-            <button className="primary-btn add-product-btn" onClick={openNewSale}>
+            <button
+              className="primary-btn add-product-btn"
+              onClick={openNewSale}
+            >
               + New Sale
             </button>
           )}
@@ -682,14 +706,15 @@ function Sales() {
                           </button>
                         )}
 
-                      {sale.status === "completed" && hasPermission("sales.create") && (
-                        <button
-                          className="small-btn"
-                          onClick={() => openEditSale(sale.id)}
-                        >
-                          Edit
-                        </button>
-                      )}
+                      {sale.status === "completed" &&
+                        hasPermission("sales.create") && (
+                          <button
+                            className="small-btn"
+                            onClick={() => openEditSale(sale.id)}
+                          >
+                            Edit
+                          </button>
+                        )}
 
                       <button
                         className="small-btn secondary-table-btn"
@@ -730,7 +755,11 @@ function Sales() {
 
       {showSaleModal && (
         <div className="modal-overlay">
-          <div className={`product-modal ${showReviewModal ? "modal-blurred" : ""}`}>
+          <div
+            className={`product-modal ${
+              showReviewModal ? "modal-blurred" : ""
+            }`}
+          >
             <div className="modal-header">
               <div>
                 <h3>{editMode ? "Edit Sale" : "New Sale"}</h3>
@@ -764,7 +793,9 @@ function Sales() {
                     )}
 
                     {hasPermission("sales.pending.create") && (
-                      <option value="pending">Pending Sale / Reserve Stock</option>
+                      <option value="pending">
+                        Pending Sale / Reserve Stock
+                      </option>
                     )}
                   </select>
                 </div>
@@ -779,7 +810,9 @@ function Sales() {
                       <SearchableSelect
                         label="Product"
                         value={item.productId}
-                        onChange={(value) => updateItem(index, "productId", value)}
+                        onChange={(value) =>
+                          updateItem(index, "productId", value)
+                        }
                         placeholder="Select product"
                         searchPlaceholder="Search products..."
                         options={products.map((product) => ({
@@ -829,7 +862,11 @@ function Sales() {
                 );
               })}
 
-              <button type="button" className="secondary-btn" onClick={addItemRow}>
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={addItemRow}
+              >
                 + Add Item
               </button>
 
@@ -880,6 +917,7 @@ function Sales() {
                     ? "Advance Payment Method"
                     : "Payment Method"}
                 </label>
+
                 <select
                   value={form.paymentMethod}
                   onChange={(e) =>
@@ -976,7 +1014,11 @@ function Sales() {
               </div>
 
               <div className="modal-actions">
-                <button type="button" className="secondary-btn" onClick={closeModals}>
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={closeModals}
+                >
                   Cancel
                 </button>
 
@@ -1079,7 +1121,11 @@ function Sales() {
                   Edit
                 </button>
 
-                <button type="button" className="primary-btn" onClick={submitSale}>
+                <button
+                  type="button"
+                  className="primary-btn"
+                  onClick={submitSale}
+                >
                   Confirm & Save
                 </button>
               </div>
