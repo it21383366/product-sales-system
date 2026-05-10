@@ -2775,3 +2775,106 @@ th {
     grid-column: auto;
   }
 }
+
+.sale-modal {
+  width: min(1120px, calc(100vw - 32px));
+  max-width: 1120px;
+  max-height: 90vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.sale-modal .product-form {
+  overflow-x: hidden;
+}
+
+.batch-sale-item-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(260px, 1.4fr) 90px 120px 100px;
+  gap: 10px;
+  align-items: end;
+  width: 100%;
+  max-width: 100%;
+  overflow: visible;
+}
+
+.batch-sale-item-row > div,
+.batch-sale-item-row input,
+.batch-sale-item-row select,
+.batch-sale-item-row button {
+  min-width: 0;
+}
+
+.batch-row-note {
+  grid-column: 1 / -1;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  color: #bfdbfe;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.batch-row-note strong {
+  color: #dbeafe;
+}
+
+.searchable-select,
+.searchable-select-wrapper {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.searchable-select-trigger,
+.searchable-select-button {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.searchable-select-menu,
+.searchable-select-dropdown {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.searchable-select-option {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+@media (max-width: 1100px) {
+  .batch-sale-item-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .batch-sale-item-row button {
+    width: 100%;
+  }
+
+  .batch-row-note {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 700px) {
+  .sale-modal {
+    width: calc(100vw - 20px);
+    max-height: 92vh;
+  }
+
+  .batch-sale-item-row {
+    grid-template-columns: 1fr;
+  }
+
+  .batch-row-note {
+    grid-column: auto;
+  }
+}

@@ -1107,7 +1107,7 @@ function Sales() {
       {showSaleModal && (
         <div className="modal-overlay">
           <div
-            className={`product-modal ${
+            className={`product-modal sale-modal ${
               showReviewModal ? "modal-blurred" : ""
             }`}
           >
