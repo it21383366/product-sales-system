@@ -7,6 +7,7 @@ import Sales from "./pages/Sales";
 import Users from "./pages/Users";
 import Settings from "./pages/Settings";
 import Suppliers from "./pages/Suppliers";
+import Damages from "./pages/Damages";
 import "./App.css";
 
 const API_URL = import.meta.env.VITE_API_URL;
@@ -255,6 +256,15 @@ function App() {
                 onClick={() => setActivePage("reports")}
               >
                 Reports
+              </button>
+            )}
+
+            {hasPermission("damages.view") && (
+              <button
+                className={activePage === "damages" ? "active" : ""}
+                onClick={() => setActivePage("damages")}
+              >
+                Damaged Items
               </button>
             )}
 

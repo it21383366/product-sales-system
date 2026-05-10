@@ -2191,3 +2191,47 @@ th {
     grid-template-columns: 1fr;
   }
 }
+
+/* DAMAGES PAGE */
+
+.damages-page {
+  width: 100%;
+}
+
+.damage-stock-box {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: #0b1220;
+  border: 1px solid var(--border-light);
+}
+
+.damage-stock-box div {
+  padding: 12px;
+  border-radius: 10px;
+  background: #111827;
+  border: 1px solid var(--border);
+}
+
+.damage-stock-box span {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 5px;
+}
+
+.damage-stock-box strong {
+  display: block;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.badge.neutral {
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+}
