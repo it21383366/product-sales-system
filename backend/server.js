@@ -233,6 +233,7 @@ app.get("/api/setup-database", async (req, res) => {
       ["products.create", "Create Products"],
       ["products.edit", "Edit Products"],
       ["products.delete", "Delete Products"],
+      ["products.listing.edit", "Edit Product Listing"],
 
       ["suppliers.view", "View Suppliers"],
       ["suppliers.create", "Create Suppliers"],
@@ -1063,6 +1064,7 @@ app.post(
             "products.create",
             "products.edit",
             "products.delete",
+            "products.listing.edit",
 
             "suppliers.view",
             "suppliers.create",
@@ -1089,6 +1091,7 @@ app.post(
             "products.view",
             "products.create",
             "products.edit",
+            "products.listing.edit",
 
             "suppliers.view",
             "suppliers.create",
@@ -1120,6 +1123,7 @@ app.post(
             "products.view",
             "products.create",
             "products.edit",
+            "products.listing.edit",
 
             "suppliers.view",
             "suppliers.create",
@@ -2101,7 +2105,7 @@ app.post(
 app.patch(
   "/api/products/:id",
   authMiddleware,
-  requirePermission("products.edit"),
+  requirePermission("products.listing.edit"),
   async (req, res) => {
     try {
       const { id } = req.params;
@@ -2162,6 +2166,33 @@ app.patch(
           message: "Product not found",
         });
       }
+
+      await pool.query(
+        `
+        INSERT INTO audit_logs (
+          organisation_id,
+          user_id,
+          action,
+          table_name,
+          record_id,
+          details
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          req.user.organisation_id,
+          req.user.id,
+          "edited product listing",
+          "products",
+          id,
+          JSON.stringify({
+            productName: result.rows[0].name,
+            sku: result.rows[0].sku,
+            categoryId: result.rows[0].category_id,
+            sellingPrice: result.rows[0].selling_price,
+          }),
+        ]
+      );
 
       res.json({
         status: "success",
