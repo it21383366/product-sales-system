@@ -6987,7 +6987,6 @@ app.patch(
           updated_at = CURRENT_TIMESTAMP
         WHERE id = $12
         RETURNING 
-          RETURNING 
           id,
           name,
           email,
