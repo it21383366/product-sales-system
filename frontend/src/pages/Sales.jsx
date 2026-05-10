@@ -41,6 +41,16 @@ function Sales() {
   const [cancelReason, setCancelReason] = useState("");
   const [cancelModalError, setCancelModalError] = useState("");
 
+  const [showRefundModal, setShowRefundModal] = useState(false);
+  const [refundModalError, setRefundModalError] = useState("");
+  const [selectedRefundSale, setSelectedRefundSale] = useState(null);
+  const [refundForm, setRefundForm] = useState({
+    refundType: "change_of_mind",
+    receiptReceived: false,
+    reason: "",
+    items: [],
+  });
+
   const [form, setForm] = useState({
     saleStatus: defaultSaleStatus,
     paymentMethod: "cash",
@@ -460,6 +470,131 @@ function Sales() {
     }
   };
 
+  const openRefundModal = async (saleId) => {
+    try {
+      setError("");
+      setMessage("");
+      setRefundModalError("");
+
+      const response = await api.get(`/api/sales/${saleId}`);
+      const sale = response.data.sale;
+
+      if (!["completed", "partially_returned"].includes(sale.status)) {
+        setError("Only completed or partially returned sales can be refunded");
+        return;
+      }
+
+      setSelectedRefundSale(sale);
+      setRefundForm({
+        refundType: "change_of_mind",
+        receiptReceived: false,
+        reason: "",
+        items: sale.items.map((item) => ({
+          saleItemId: item.id,
+          productName: item.product_name,
+          soldQuantity: Number(item.quantity || 0),
+          refundQuantity: 0,
+          unitPrice: Number(item.unit_price || 0),
+        })),
+      });
+
+      setShowRefundModal(true);
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to load sale for refund");
+    }
+  };
+
+  const closeRefundModal = () => {
+    setShowRefundModal(false);
+    setRefundModalError("");
+    setSelectedRefundSale(null);
+    setRefundForm({
+      refundType: "change_of_mind",
+      receiptReceived: false,
+      reason: "",
+      items: [],
+    });
+  };
+
+  const updateRefundItemQuantity = (saleItemId, value) => {
+    const quantity = value === "" ? "" : Number(value);
+
+    setRefundForm({
+      ...refundForm,
+      items: refundForm.items.map((item) =>
+        item.saleItemId === saleItemId
+          ? {
+              ...item,
+              refundQuantity: quantity,
+            }
+          : item
+      ),
+    });
+
+    setRefundModalError("");
+  };
+
+  const selectedRefundItems = refundForm.items.filter(
+    (item) => Number(item.refundQuantity || 0) > 0
+  );
+
+  const refundTotal = selectedRefundItems.reduce((sum, item) => {
+    return sum + Number(item.refundQuantity || 0) * Number(item.unitPrice || 0);
+  }, 0);
+
+  const submitRefund = async () => {
+    try {
+      setRefundModalError("");
+
+      if (!selectedRefundSale) {
+        return;
+      }
+
+      if (!refundForm.receiptReceived) {
+        setRefundModalError("Original receipt must be received before refund");
+        return;
+      }
+
+      if (!refundForm.reason.trim()) {
+        setRefundModalError("Refund reason is required");
+        return;
+      }
+
+      if (selectedRefundItems.length === 0) {
+        setRefundModalError("Select at least one item quantity to refund");
+        return;
+      }
+
+      for (const item of selectedRefundItems) {
+        if (Number(item.refundQuantity) > Number(item.soldQuantity)) {
+          setRefundModalError(
+            `${item.productName} refund quantity cannot be more than sold quantity`
+          );
+          return;
+        }
+      }
+
+      await api.post("/api/refunds", {
+        saleNumber: selectedRefundSale.sale_number,
+        refundType: refundForm.refundType,
+        receiptReceived: refundForm.receiptReceived,
+        reason: refundForm.reason,
+        items: selectedRefundItems.map((item) => ({
+          saleItemId: item.saleItemId,
+          quantity: Number(item.refundQuantity),
+        })),
+      });
+
+      closeRefundModal();
+      setMessage("Refund created successfully");
+
+      await fetchSales();
+      await fetchProducts();
+    } catch (err) {
+      setRefundModalError(err.response?.data?.message || "Failed to create refund");
+    }
+  };
+
   const getStatusBadge = (sale) => {
     if (sale.status === "pending") {
       return <span className="badge warning">Pending</span>;
@@ -467,6 +602,14 @@ function Sales() {
 
     if (sale.status === "cancelled") {
       return <span className="badge danger">Cancelled</span>;
+    }
+
+    if (sale.status === "returned") {
+      return <span className="badge danger">Returned</span>;
+    }
+
+    if (sale.status === "partially_returned") {
+      return <span className="badge warning">Partially Returned</span>;
     }
 
     if (sale.status === "refunded") {
@@ -496,6 +639,14 @@ function Sales() {
       }
 
       return "Cancelled sale.";
+    }
+
+    if (sale.status === "returned") {
+      return "Sale returned.";
+    }
+
+    if (sale.status === "partially_returned") {
+      return "Sale partially returned.";
     }
 
     if (sale.is_edited) {
@@ -533,6 +684,10 @@ function Sales() {
         ? "PENDING SALE / STOCK RESERVED"
         : sale.status === "cancelled"
         ? "CANCELLED SALE / ADVANCE RETURNED"
+        : sale.status === "returned"
+        ? "RETURNED SALE"
+        : sale.status === "partially_returned"
+        ? "PARTIALLY RETURNED SALE"
         : sale.status === "refunded"
         ? "REFUNDED SALE"
         : "COMPLETED SALE";
@@ -548,6 +703,10 @@ function Sales() {
         ? `$${Number(sale.advance_amount || 0).toFixed(
             2
           )} advance returned to customer.`
+        : sale.status === "returned"
+        ? "Sale returned."
+        : sale.status === "partially_returned"
+        ? "Sale partially returned."
         : Number(sale.advance_amount || 0) > 0
         ? `$${Number(sale.advance_amount || 0).toFixed(
             2
@@ -696,7 +855,7 @@ function Sales() {
       <div className="page-header">
         <div>
           <h2>Sales</h2>
-          <p>View sales history, pending reservations, and POS sales.</p>
+          <p>View sales history, pending reservations, returns, and POS sales.</p>
         </div>
       </div>
 
@@ -783,6 +942,18 @@ function Sales() {
                             onClick={() => openEditSale(sale.id)}
                           >
                             Edit
+                          </button>
+                        )}
+
+                      {["completed", "partially_returned"].includes(
+                        sale.status
+                      ) &&
+                        hasPermission("sales.refund.create") && (
+                          <button
+                            className="small-btn danger-table-btn"
+                            onClick={() => openRefundModal(sale.id)}
+                          >
+                            Refund
                           </button>
                         )}
 
@@ -1270,7 +1441,9 @@ function Sales() {
 
             <div className="pending-remark-box">
               ${Number(selectedPendingSale.advance_amount || 0).toFixed(2)} paid
-              as advance. ${Number(selectedPendingSale.balance_amount || 0).toFixed(2)} needs to be paid.
+              as advance. $
+              {Number(selectedPendingSale.balance_amount || 0).toFixed(2)} needs
+              to be paid.
             </div>
 
             <div className="product-form">
@@ -1425,6 +1598,163 @@ function Sales() {
                 onClick={submitCancelPending}
               >
                 Cancel Pending Sale
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRefundModal && selectedRefundSale && (
+        <div className="modal-overlay">
+          <div className="refund-modal">
+            <div className="modal-header">
+              <div>
+                <h3>Refund Sale</h3>
+                <p>
+                  Sale No: <strong>{selectedRefundSale.sale_number}</strong>
+                </p>
+              </div>
+
+              <button className="modal-close-btn" onClick={closeRefundModal}>
+                ×
+              </button>
+            </div>
+
+            <div className="product-form">
+              {refundModalError && (
+                <div className="modal-error">{refundModalError}</div>
+              )}
+
+              <label>Refund Type *</label>
+              <select
+                value={refundForm.refundType}
+                onChange={(e) => {
+                  setRefundModalError("");
+                  setRefundForm({
+                    ...refundForm,
+                    refundType: e.target.value,
+                  });
+                }}
+              >
+                <option value="change_of_mind">Change of Mind</option>
+                <option value="damaged_item">Damaged Item</option>
+              </select>
+
+              <label className="checkbox-line">
+                <input
+                  type="checkbox"
+                  checked={refundForm.receiptReceived}
+                  onChange={(e) => {
+                    setRefundModalError("");
+                    setRefundForm({
+                      ...refundForm,
+                      receiptReceived: e.target.checked,
+                    });
+                  }}
+                />
+                Original receipt received from customer
+              </label>
+
+              <label>Refund Reason *</label>
+              <textarea
+                value={refundForm.reason}
+                placeholder={
+                  refundForm.refundType === "damaged_item"
+                    ? "Example: Customer returned damaged item"
+                    : "Example: Customer changed their mind"
+                }
+                onChange={(e) => {
+                  setRefundModalError("");
+                  setRefundForm({
+                    ...refundForm,
+                    reason: e.target.value,
+                  });
+                }}
+                required
+              />
+
+              <div className="refund-items-box">
+                <h4>Refund Items</h4>
+
+                <div className="refund-items-list">
+                  {refundForm.items.map((item) => (
+                    <div className="refund-item-row" key={item.saleItemId}>
+                      <div>
+                        <strong>{item.productName}</strong>
+                        <span>
+                          Sold: {item.soldQuantity} · Unit: $
+                          {Number(item.unitPrice || 0).toFixed(2)}
+                        </span>
+                      </div>
+
+                      <input
+                        type="number"
+                        min="0"
+                        max={item.soldQuantity}
+                        value={item.refundQuantity}
+                        placeholder="Qty"
+                        onChange={(e) =>
+                          updateRefundItemQuantity(
+                            item.saleItemId,
+                            e.target.value
+                          )
+                        }
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="sale-total-box">
+                <div>
+                  <span>Refund Items</span>
+                  <strong>{selectedRefundItems.length}</strong>
+                </div>
+
+                <div>
+                  <span>Refund Total</span>
+                  <strong>${refundTotal.toFixed(2)}</strong>
+                </div>
+
+                <div>
+                  <span>Stock Action</span>
+                  <strong>
+                    {refundForm.refundType === "change_of_mind"
+                      ? "Stock Increase"
+                      : "Damage Record"}
+                  </strong>
+                </div>
+              </div>
+
+              {refundForm.refundType === "damaged_item" && (
+                <div className="pending-remark-box danger-remark">
+                  Damaged item refund will not add items back to sellable stock.
+                  It will create a damaged item record.
+                </div>
+              )}
+
+              {refundForm.refundType === "change_of_mind" && (
+                <div className="pending-remark-box">
+                  Change of mind refund will increase sellable stock.
+                </div>
+              )}
+            </div>
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={closeRefundModal}
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                className="primary-btn danger-confirm-btn"
+                onClick={submitRefund}
+              >
+                Confirm Refund
               </button>
             </div>
           </div>
