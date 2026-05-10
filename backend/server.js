@@ -237,6 +237,53 @@ app.get("/api/setup-database", async (req, res) => {
 
       ALTER TABLE sales
       ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP;
+
+      CREATE TABLE IF NOT EXISTS refunds (
+        id SERIAL PRIMARY KEY,
+        organisation_id INTEGER REFERENCES organisations(id) ON DELETE CASCADE,
+        sale_id INTEGER REFERENCES sales(id) ON DELETE SET NULL,
+        sale_number VARCHAR(100),
+        refund_number VARCHAR(100),
+        refund_type VARCHAR(50) NOT NULL,
+        total_refund_amount NUMERIC(12,2) DEFAULT 0,
+        receipt_received BOOLEAN DEFAULT FALSE,
+        reason TEXT,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS refund_items (
+        id SERIAL PRIMARY KEY,
+        refund_id INTEGER REFERENCES refunds(id) ON DELETE CASCADE,
+        sale_item_id INTEGER REFERENCES sale_items(id) ON DELETE SET NULL,
+        product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        product_name VARCHAR(255),
+        quantity INTEGER NOT NULL,
+        unit_price NUMERIC(12,2) DEFAULT 0,
+        total_price NUMERIC(12,2) DEFAULT 0,
+        condition_type VARCHAR(50),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS damaged_items (
+        id SERIAL PRIMARY KEY,
+        organisation_id INTEGER REFERENCES organisations(id) ON DELETE CASCADE,
+        refund_id INTEGER REFERENCES refunds(id) ON DELETE SET NULL,
+        product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        product_name VARCHAR(255),
+        quantity INTEGER NOT NULL,
+        damage_source VARCHAR(100) NOT NULL,
+        reason TEXT,
+        remark TEXT,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      ALTER TABLE sales
+        ADD COLUMN IF NOT EXISTS return_reason TEXT;
+
+      ALTER TABLE sales
+        ADD COLUMN IF NOT EXISTS returned_at TIMESTAMP;
     `);
 
     const permissions = [
@@ -269,6 +316,13 @@ app.get("/api/setup-database", async (req, res) => {
       ["sales.pending.create", "Create Pending Sales"],
       ["sales.pending.complete", "Complete Pending Sales"],
       ["sales.pending.cancel", "Cancel Pending Sales"],
+      ["sales.refund.create", "Create Refunds"],
+      ["sales.refund.view", "View Refunds"],
+
+      ["damages.view", "View Damaged Items"],
+      ["damages.create", "Create Damaged Items"],
+      ["damages.edit", "Edit Damaged Items"],
+      ["damages.delete", "Delete Damaged Items"],
 
       ["reports.sales.view", "View Sales Reports"],
       ["reports.products.view", "View Product Reports"],
@@ -1112,6 +1166,12 @@ app.post(
             "sales.pending.create",
             "sales.pending.complete",
             "sales.pending.cancel",
+            "sales.refund.create",
+            "sales.refund.view",
+            "damages.view",
+            "damages.create",
+            "damages.edit",
+            "damages.delete",
 
             "reports.sales.view",
             "reports.products.view",
@@ -1150,6 +1210,11 @@ app.post(
             "sales.pending.create",
             "sales.pending.complete",
             "sales.pending.cancel",
+            "sales.refund.create",
+            "sales.refund.view",
+            "damages.view",
+            "damages.create",
+            "damages.edit",
 
             "reports.sales.view",
             "reports.products.view",
@@ -1170,6 +1235,8 @@ app.post(
             "sales.create",
             "sales.pending.create",
             "sales.pending.complete",
+            "sales.refund.view",
+            "sales.refund.create",
           ],
         },
         {
@@ -1188,6 +1255,9 @@ app.post(
             "suppliers.view",
             "suppliers.create",
             "suppliers.edit",
+            "damages.view",
+            "damages.create",
+            "damages.edit",
 
             "reports.products.view",
             "reports.stock.view",
@@ -3878,6 +3948,703 @@ app.patch(
       res.status(500).json({
         status: "error",
         message: "Failed to refund sale",
+        error: error.message,
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// Get refunds
+app.get(
+  "/api/refunds",
+  authMiddleware,
+  requirePermission("sales.refund.view"),
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 25, saleNumber, refundType } = req.query;
+      const offset = (Number(page) - 1) * Number(limit);
+
+      const conditions = ["refunds.organisation_id = $1"];
+      const values = [req.user.organisation_id];
+
+      if (saleNumber) {
+        values.push(`%${saleNumber}%`);
+        conditions.push(`refunds.sale_number ILIKE $${values.length}`);
+      }
+
+      if (refundType) {
+        values.push(refundType);
+        conditions.push(`refunds.refund_type = $${values.length}`);
+      }
+
+      const result = await pool.query(
+        `
+        SELECT
+          refunds.*,
+          users.full_name AS created_by_name
+        FROM refunds
+        LEFT JOIN users ON refunds.created_by = users.id
+        WHERE ${conditions.join(" AND ")}
+        ORDER BY refunds.created_at DESC
+        LIMIT $${values.length + 1}
+        OFFSET $${values.length + 2}
+        `,
+        [...values, Number(limit), offset]
+      );
+
+      const countResult = await pool.query(
+        `
+        SELECT COUNT(*) AS count
+        FROM refunds
+        WHERE ${conditions.join(" AND ")}
+        `,
+        values
+      );
+
+      res.json({
+        status: "success",
+        refunds: result.rows,
+        total: Number(countResult.rows[0].count),
+        page: Number(page),
+        limit: Number(limit),
+      });
+    } catch (error) {
+      console.error("Get refunds error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to load refunds",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Create refund by sale number
+app.post(
+  "/api/refunds",
+  authMiddleware,
+  requirePermission("sales.refund.create"),
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const {
+        saleNumber,
+        refundType,
+        receiptReceived,
+        reason,
+        items,
+      } = req.body;
+
+      if (!saleNumber) {
+        return res.status(400).json({
+          status: "error",
+          message: "Sale number is required",
+        });
+      }
+
+      if (!["damaged_item", "change_of_mind"].includes(refundType)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Refund type must be damaged item or change of mind",
+        });
+      }
+
+      if (!receiptReceived) {
+        return res.status(400).json({
+          status: "error",
+          message: "Original receipt must be received before refund",
+        });
+      }
+
+      if (!reason || !reason.trim()) {
+        return res.status(400).json({
+          status: "error",
+          message: "Refund reason is required",
+        });
+      }
+
+      if (!items || !Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({
+          status: "error",
+          message: "Refund items are required",
+        });
+      }
+
+      await client.query("BEGIN");
+
+      const saleResult = await client.query(
+        `
+        SELECT *
+        FROM sales
+        WHERE sale_number = $1
+        AND organisation_id = $2
+        AND status IN ('completed', 'returned', 'partially_returned')
+        `,
+        [saleNumber, req.user.organisation_id]
+      );
+
+      if (saleResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({
+          status: "error",
+          message: "Completed sale not found for this sale number",
+        });
+      }
+
+      const sale = saleResult.rows[0];
+
+      const saleItemsResult = await client.query(
+        `
+        SELECT *
+        FROM sale_items
+        WHERE sale_id = $1
+        `,
+        [sale.id]
+      );
+
+      const saleItems = saleItemsResult.rows;
+
+      let totalRefundAmount = 0;
+      const refundItemsToInsert = [];
+
+      for (const item of items) {
+        const { saleItemId, quantity } = item;
+
+        if (!saleItemId || !quantity || Number(quantity) <= 0) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message: "Each refund item must have saleItemId and valid quantity",
+          });
+        }
+
+        const saleItem = saleItems.find(
+          (row) => Number(row.id) === Number(saleItemId)
+        );
+
+        if (!saleItem) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message: "Invalid sale item selected for refund",
+          });
+        }
+
+        const previousRefundResult = await client.query(
+          `
+          SELECT COALESCE(SUM(refund_items.quantity), 0) AS refunded_quantity
+          FROM refund_items
+          INNER JOIN refunds ON refund_items.refund_id = refunds.id
+          WHERE refunds.sale_id = $1
+          AND refund_items.sale_item_id = $2
+          `,
+          [sale.id, saleItemId]
+        );
+
+        const alreadyRefunded = Number(
+          previousRefundResult.rows[0].refunded_quantity || 0
+        );
+
+        const availableToRefund = Number(saleItem.quantity) - alreadyRefunded;
+
+        if (Number(quantity) > availableToRefund) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message: `${saleItem.product_name} can only refund ${availableToRefund} item(s)`,
+          });
+        }
+
+        const unitPrice = Number(saleItem.unit_price || 0);
+        const totalPrice = unitPrice * Number(quantity);
+
+        totalRefundAmount += totalPrice;
+
+        refundItemsToInsert.push({
+          saleItem,
+          quantity: Number(quantity),
+          unitPrice,
+          totalPrice,
+        });
+      }
+
+      const refundCountResult = await client.query(
+        `
+        SELECT COUNT(*) AS count
+        FROM refunds
+        WHERE organisation_id = $1
+        `,
+        [req.user.organisation_id]
+      );
+
+      const refundNumber = `REF-${String(
+        Number(refundCountResult.rows[0].count) + 1
+      ).padStart(5, "0")}`;
+
+      const refundResult = await client.query(
+        `
+        INSERT INTO refunds (
+          organisation_id,
+          sale_id,
+          sale_number,
+          refund_number,
+          refund_type,
+          total_refund_amount,
+          receipt_received,
+          reason,
+          created_by
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING *
+        `,
+        [
+          req.user.organisation_id,
+          sale.id,
+          sale.sale_number,
+          refundNumber,
+          refundType,
+          totalRefundAmount,
+          receiptReceived,
+          reason,
+          req.user.id,
+        ]
+      );
+
+      const refund = refundResult.rows[0];
+
+      for (const refundItem of refundItemsToInsert) {
+        const { saleItem, quantity, unitPrice, totalPrice } = refundItem;
+
+        await client.query(
+          `
+          INSERT INTO refund_items (
+            refund_id,
+            sale_item_id,
+            product_id,
+            product_name,
+            quantity,
+            unit_price,
+            total_price,
+            condition_type
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          `,
+          [
+            refund.id,
+            saleItem.id,
+            saleItem.product_id,
+            saleItem.product_name,
+            quantity,
+            unitPrice,
+            totalPrice,
+            refundType,
+          ]
+        );
+
+        if (refundType === "change_of_mind") {
+          await client.query(
+            `
+            UPDATE products
+            SET stock_quantity = stock_quantity + $1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2
+            AND organisation_id = $3
+            `,
+            [quantity, saleItem.product_id, req.user.organisation_id]
+          );
+
+          await client.query(
+            `
+            INSERT INTO stock_movements (
+              organisation_id,
+              product_id,
+              movement_type,
+              quantity,
+              reason,
+              created_by
+            )
+            VALUES ($1, $2, 'refund_return', $3, $4, $5)
+            `,
+            [
+              req.user.organisation_id,
+              saleItem.product_id,
+              quantity,
+              `Change of mind refund ${refundNumber} for sale ${sale.sale_number}`,
+              req.user.id,
+            ]
+          );
+        }
+
+        if (refundType === "damaged_item") {
+          await client.query(
+            `
+            INSERT INTO damaged_items (
+              organisation_id,
+              refund_id,
+              product_id,
+              product_name,
+              quantity,
+              damage_source,
+              reason,
+              remark,
+              created_by
+            )
+            VALUES ($1, $2, $3, $4, $5, 'Customer Return', $6, $7, $8)
+            `,
+            [
+              req.user.organisation_id,
+              refund.id,
+              saleItem.product_id,
+              saleItem.product_name,
+              quantity,
+              reason,
+              `Damaged item refund ${refundNumber} from sale ${sale.sale_number}`,
+              req.user.id,
+            ]
+          );
+        }
+      }
+
+      const allRefundedResult = await client.query(
+        `
+        SELECT
+          sale_items.id,
+          sale_items.quantity AS sold_quantity,
+          COALESCE(SUM(refund_items.quantity), 0) AS refunded_quantity
+        FROM sale_items
+        LEFT JOIN refund_items ON refund_items.sale_item_id = sale_items.id
+        LEFT JOIN refunds ON refunds.id = refund_items.refund_id
+        WHERE sale_items.sale_id = $1
+        GROUP BY sale_items.id, sale_items.quantity
+        `,
+        [sale.id]
+      );
+
+      const allItemsFullyRefunded = allRefundedResult.rows.every(
+        (row) => Number(row.refunded_quantity) >= Number(row.sold_quantity)
+      );
+
+      const newSaleStatus = allItemsFullyRefunded
+        ? "returned"
+        : "partially_returned";
+
+      await client.query(
+        `
+        UPDATE sales
+        SET
+          status = $1,
+          return_reason = $2,
+          returned_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $3
+        AND organisation_id = $4
+        `,
+        [newSaleStatus, reason, sale.id, req.user.organisation_id]
+      );
+
+      await client.query(
+        `
+        INSERT INTO audit_logs (
+          organisation_id,
+          user_id,
+          action,
+          table_name,
+          record_id,
+          details
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          req.user.organisation_id,
+          req.user.id,
+          "created refund",
+          "refunds",
+          refund.id,
+          JSON.stringify({
+            refundNumber,
+            saleNumber: sale.sale_number,
+            refundType,
+            receiptReceived,
+            totalRefundAmount,
+            reason,
+          }),
+        ]
+      );
+
+      await client.query("COMMIT");
+
+      res.status(201).json({
+        status: "success",
+        message: "Refund created successfully",
+        refund: {
+          ...refund,
+          total_refund_amount: totalRefundAmount,
+        },
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+
+      console.error("Create refund error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to create refund",
+        error: error.message,
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// Get damaged items
+app.get(
+  "/api/damages",
+  authMiddleware,
+  requirePermission("damages.view"),
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 25, source, search } = req.query;
+      const offset = (Number(page) - 1) * Number(limit);
+
+      const conditions = ["damaged_items.organisation_id = $1"];
+      const values = [req.user.organisation_id];
+
+      if (source) {
+        values.push(source);
+        conditions.push(`damaged_items.damage_source = $${values.length}`);
+      }
+
+      if (search) {
+        values.push(`%${search}%`);
+        conditions.push(
+          `(damaged_items.product_name ILIKE $${values.length} OR damaged_items.reason ILIKE $${values.length})`
+        );
+      }
+
+      const result = await pool.query(
+        `
+        SELECT
+          damaged_items.*,
+          products.sku,
+          users.full_name AS created_by_name
+        FROM damaged_items
+        LEFT JOIN products ON damaged_items.product_id = products.id
+        LEFT JOIN users ON damaged_items.created_by = users.id
+        WHERE ${conditions.join(" AND ")}
+        ORDER BY damaged_items.created_at DESC
+        LIMIT $${values.length + 1}
+        OFFSET $${values.length + 2}
+        `,
+        [...values, Number(limit), offset]
+      );
+
+      const countResult = await pool.query(
+        `
+        SELECT COUNT(*) AS count
+        FROM damaged_items
+        WHERE ${conditions.join(" AND ")}
+        `,
+        values
+      );
+
+      res.json({
+        status: "success",
+        damages: result.rows,
+        total: Number(countResult.rows[0].count),
+        page: Number(page),
+        limit: Number(limit),
+      });
+    } catch (error) {
+      console.error("Get damages error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to load damaged items",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Add damaged item manually
+app.post(
+  "/api/damages",
+  authMiddleware,
+  requirePermission("damages.create"),
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const { productId, quantity, damageSource, reason, remark } = req.body;
+
+      if (!productId) {
+        return res.status(400).json({
+          status: "error",
+          message: "Product is required",
+        });
+      }
+
+      if (!quantity || Number(quantity) <= 0) {
+        return res.status(400).json({
+          status: "error",
+          message: "Quantity must be greater than 0",
+        });
+      }
+
+      if (!["Store Damage", "Supplier Damage", "Other Damage"].includes(damageSource)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Damage source must be Store Damage, Supplier Damage, or Other Damage",
+        });
+      }
+
+      if (!reason || !reason.trim()) {
+        return res.status(400).json({
+          status: "error",
+          message: "Damage reason is required",
+        });
+      }
+
+      await client.query("BEGIN");
+
+      const productResult = await client.query(
+        `
+        SELECT id, name, stock_quantity
+        FROM products
+        WHERE id = $1
+        AND organisation_id = $2
+        AND is_active = true
+        `,
+        [productId, req.user.organisation_id]
+      );
+
+      if (productResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({
+          status: "error",
+          message: "Product not found",
+        });
+      }
+
+      const product = productResult.rows[0];
+
+      if (Number(product.stock_quantity) < Number(quantity)) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          status: "error",
+          message: `Not enough stock. Available stock: ${product.stock_quantity}`,
+        });
+      }
+
+      await client.query(
+        `
+        UPDATE products
+        SET stock_quantity = stock_quantity - $1,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2
+        AND organisation_id = $3
+        `,
+        [Number(quantity), productId, req.user.organisation_id]
+      );
+
+      const damageResult = await client.query(
+        `
+        INSERT INTO damaged_items (
+          organisation_id,
+          product_id,
+          product_name,
+          quantity,
+          damage_source,
+          reason,
+          remark,
+          created_by
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING *
+        `,
+        [
+          req.user.organisation_id,
+          productId,
+          product.name,
+          Number(quantity),
+          damageSource,
+          reason,
+          remark || null,
+          req.user.id,
+        ]
+      );
+
+      const damage = damageResult.rows[0];
+
+      await client.query(
+        `
+        INSERT INTO stock_movements (
+          organisation_id,
+          product_id,
+          movement_type,
+          quantity,
+          reason,
+          created_by
+        )
+        VALUES ($1, $2, 'damage', $3, $4, $5)
+        `,
+        [
+          req.user.organisation_id,
+          productId,
+          -Number(quantity),
+          `${damageSource}: ${reason}`,
+          req.user.id,
+        ]
+      );
+
+      await client.query(
+        `
+        INSERT INTO audit_logs (
+          organisation_id,
+          user_id,
+          action,
+          table_name,
+          record_id,
+          details
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          req.user.organisation_id,
+          req.user.id,
+          "added damaged item",
+          "damaged_items",
+          damage.id,
+          JSON.stringify({
+            productName: product.name,
+            quantity: Number(quantity),
+            damageSource,
+            reason,
+            remark,
+          }),
+        ]
+      );
+
+      await client.query("COMMIT");
+
+      res.status(201).json({
+        status: "success",
+        message: "Damaged item recorded and stock reduced",
+        damage,
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+
+      console.error("Create damage error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to record damaged item",
         error: error.message,
       });
     } finally {
