@@ -352,9 +352,67 @@ app.get("/api/setup-database", async (req, res) => {
       ALTER TABLE sale_items
         ADD COLUMN IF NOT EXISTS stock_batch_id UUID REFERENCES product_stock_batches(id) ON DELETE SET NULL;
 
+      -- Convert old non-batch products into one default stock batch.
+      -- This allows simple products and batch products to work through the same backend logic.
+      INSERT INTO product_stock_batches (
+        organisation_id,
+        product_id,
+        supplier_id,
+        buying_price,
+        selling_price,
+        quantity,
+        original_quantity,
+        batch_note,
+        is_active,
+        created_at,
+        updated_at
+      )
+      SELECT
+        products.organisation_id,
+        products.id,
+        products.supplier_id,
+        COALESCE(products.buying_price, 0),
+        COALESCE(products.selling_price, 0),
+        COALESCE(products.stock_quantity, 0),
+        COALESCE(products.stock_quantity, 0),
+        'Default batch auto-created from old product stock',
+        true,
+        CURRENT_TIMESTAMP,
+        CURRENT_TIMESTAMP
+      FROM products
+      WHERE products.is_active = true
+      AND COALESCE(products.stock_quantity, 0) > 0
+      AND NOT EXISTS (
+        SELECT 1
+        FROM product_stock_batches
+        WHERE product_stock_batches.product_id = products.id
+        AND product_stock_batches.organisation_id = products.organisation_id
+        AND product_stock_batches.is_active = true
+      );
+
+      -- Sync product stock quantity from batches
+      UPDATE products
+      SET stock_quantity = COALESCE(batch_totals.total_stock, 0),
+          updated_at = CURRENT_TIMESTAMP
+      FROM (
+        SELECT
+          product_id,
+          organisation_id,
+          COALESCE(SUM(quantity), 0) AS total_stock
+        FROM product_stock_batches
+        WHERE is_active = true
+        GROUP BY product_id, organisation_id
+      ) AS batch_totals
+      WHERE products.id = batch_totals.product_id
+      AND products.organisation_id = batch_totals.organisation_id;
+
+      DROP INDEX IF EXISTS unique_active_product_sku_per_org;
+
       CREATE UNIQUE INDEX IF NOT EXISTS unique_active_product_sku_per_org
-      ON products (organisation_id, LOWER(sku))
-      WHERE sku IS NOT NULL AND sku <> '' AND is_active = true;
+      ON products (organisation_id, LOWER(TRIM(sku)))
+      WHERE sku IS NOT NULL 
+      AND TRIM(sku) <> '' 
+      AND is_active = true;
     `);
 
     const permissions = [
@@ -3350,395 +3408,442 @@ app.get(
 // =========================
 
 // Create sale or pending sale
-app.post(
-  "/api/sales",
-  authMiddleware,
-  async (req, res) => {
-    const client = await pool.connect();
+// Create sale or pending sale
+app.post("/api/sales", authMiddleware, async (req, res) => {
+  const client = await pool.connect();
 
-    try {
-      const {
-        customerId,
-        items,
-        discountAmount,
-        taxAmount,
-        paymentMethod,
-        cashAmount,
-        cardAmount,
-        saleStatus,
-        advanceAmount,
-      } = req.body;
+  try {
+    const {
+      customerId,
+      items,
+      discountAmount,
+      taxAmount,
+      paymentMethod,
+      cashAmount,
+      cardAmount,
+      saleStatus,
+      advanceAmount,
+    } = req.body;
 
-      const finalSaleStatus = saleStatus === "pending" ? "pending" : "completed";
+    const finalSaleStatus = saleStatus === "pending" ? "pending" : "completed";
 
-      if (finalSaleStatus === "pending") {
-        if (!req.user.permissions.includes("sales.pending.create")) {
-          return res.status(403).json({
-            status: "error",
-            message: "You do not have permission to create pending sales",
-            requiredPermission: "sales.pending.create",
-          });
-        }
-      } else {
-        if (!req.user.permissions.includes("sales.create")) {
-          return res.status(403).json({
-            status: "error",
-            message: "You do not have permission to create sales",
-            requiredPermission: "sales.create",
-          });
-        }
-      }
-
-      if (!items || !Array.isArray(items) || items.length === 0) {
-        return res.status(400).json({
+    if (finalSaleStatus === "pending") {
+      if (!req.user.permissions.includes("sales.pending.create")) {
+        return res.status(403).json({
           status: "error",
-          message: "Sale items are required",
+          message: "You do not have permission to create pending sales",
+          requiredPermission: "sales.pending.create",
         });
       }
-
-      if (!["cash", "card", "split"].includes(paymentMethod)) {
-        return res.status(400).json({
+    } else {
+      if (!req.user.permissions.includes("sales.create")) {
+        return res.status(403).json({
           status: "error",
-          message: "Payment method must be cash, card, or split",
+          message: "You do not have permission to create sales",
+          requiredPermission: "sales.create",
         });
       }
+    }
 
-      await client.query("BEGIN");
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({
+        status: "error",
+        message: "Sale items are required",
+      });
+    }
 
-      let subtotal = 0;
-      const saleItems = [];
+    if (!["cash", "card", "split"].includes(paymentMethod)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Payment method must be cash, card, or split",
+      });
+    }
 
-      for (const item of items) {
-        const { productId, quantity } = item;
+    await client.query("BEGIN");
 
-        if (!productId || !quantity || Number(quantity) <= 0) {
-          await client.query("ROLLBACK");
-          return res.status(400).json({
-            status: "error",
-            message: "Each item must have productId and valid quantity",
-          });
-        }
+    let subtotal = 0;
+    const saleItems = [];
 
-        const productResult = await client.query(
-          `
-          SELECT id, name, selling_price, stock_quantity
-          FROM products
-          WHERE id = $1 
-          AND organisation_id = $2
-          AND is_active = true
-          `,
-          [productId, req.user.organisation_id]
-        );
+    for (const item of items) {
+      const { productId, stockBatchId, quantity } = item;
 
-        if (productResult.rows.length === 0) {
-          await client.query("ROLLBACK");
-          return res.status(404).json({
-            status: "error",
-            message: `Product not found: ${productId}`,
-          });
-        }
-
-        const product = productResult.rows[0];
-
-        if (Number(product.stock_quantity) < Number(quantity)) {
-          await client.query("ROLLBACK");
-          return res.status(400).json({
-            status: "error",
-            message: `Not enough stock for ${product.name}. Available stock: ${product.stock_quantity}`,
-          });
-        }
-
-        const unitPrice = Number(product.selling_price);
-        const totalPrice = unitPrice * Number(quantity);
-
-        subtotal += totalPrice;
-
-        saleItems.push({
-          productId: product.id,
-          productName: product.name,
-          quantity: Number(quantity),
-          unitPrice,
-          totalPrice,
-        });
-      }
-
-      const orgResult = await client.query(
-        `
-        SELECT invoice_prefix
-        FROM organisations
-        WHERE id = $1
-        `,
-        [req.user.organisation_id]
-      );
-
-      const organisation = orgResult.rows[0];
-
-      const finalDiscount = Number(discountAmount || 0);
-      const finalTaxAmount = Number(taxAmount || 0);
-      const totalAmount = subtotal - finalDiscount + finalTaxAmount;
-
-      if (totalAmount <= 0) {
+      if (!productId || !stockBatchId || !quantity || Number(quantity) <= 0) {
         await client.query("ROLLBACK");
         return res.status(400).json({
           status: "error",
-          message: "Sale total must be greater than 0",
+          message:
+            "Each item must have productId, stockBatchId, and valid quantity",
         });
       }
 
-      let finalCashAmount = 0;
-      let finalCardAmount = 0;
-      let finalAdvanceAmount = 0;
-      let finalBalanceAmount = 0;
-      let advancePaymentMethod = null;
-      let finalPaymentMethod = null;
-
-      if (finalSaleStatus === "pending") {
-        finalAdvanceAmount = Number(advanceAmount || 0);
-
-        if (finalAdvanceAmount <= 0) {
-          await client.query("ROLLBACK");
-          return res.status(400).json({
-            status: "error",
-            message: "Advance amount must be greater than 0 for pending sales",
-          });
-        }
-
-        if (finalAdvanceAmount >= totalAmount) {
-          await client.query("ROLLBACK");
-          return res.status(400).json({
-            status: "error",
-            message:
-              "Advance amount must be less than total amount. Use completed sale if fully paid.",
-          });
-        }
-
-        if (paymentMethod === "cash") {
-          finalCashAmount = finalAdvanceAmount;
-          finalCardAmount = 0;
-        } else if (paymentMethod === "card") {
-          finalCashAmount = 0;
-          finalCardAmount = finalAdvanceAmount;
-        } else {
-          finalCashAmount = Number(cashAmount || 0);
-          finalCardAmount = Number(cardAmount || 0);
-
-          const paidTotal = finalCashAmount + finalCardAmount;
-
-          if (Number(paidTotal.toFixed(2)) !== Number(finalAdvanceAmount.toFixed(2))) {
-            await client.query("ROLLBACK");
-            return res.status(400).json({
-              status: "error",
-              message: "Cash amount + card amount must match the advance amount",
-            });
-          }
-        }
-
-        finalBalanceAmount = totalAmount - finalAdvanceAmount;
-        advancePaymentMethod = paymentMethod;
-      } else {
-        if (paymentMethod === "cash") {
-          finalCashAmount = totalAmount;
-          finalCardAmount = 0;
-        } else if (paymentMethod === "card") {
-          finalCashAmount = 0;
-          finalCardAmount = totalAmount;
-        } else {
-          finalCashAmount = Number(cashAmount || 0);
-          finalCardAmount = Number(cardAmount || 0);
-
-          const paidTotal = finalCashAmount + finalCardAmount;
-
-          if (Number(paidTotal.toFixed(2)) !== Number(totalAmount.toFixed(2))) {
-            await client.query("ROLLBACK");
-            return res.status(400).json({
-              status: "error",
-              message: "Cash amount + card amount must match the total amount",
-            });
-          }
-        }
-
-        finalAdvanceAmount = 0;
-        finalBalanceAmount = 0;
-        finalPaymentMethod = paymentMethod;
-      }
-
-      const saleCountResult = await client.query(
+      const productResult = await client.query(
         `
-        SELECT COUNT(*) AS count
-        FROM sales
-        WHERE organisation_id = $1
+        SELECT id, name
+        FROM products
+        WHERE id = $1
+        AND organisation_id = $2
+        AND is_active = true
         `,
-        [req.user.organisation_id]
+        [productId, req.user.organisation_id]
       );
 
-      const saleNumber = `${organisation.invoice_prefix || "INV"}-${String(
-        Number(saleCountResult.rows[0].count) + 1
-      ).padStart(5, "0")}`;
+      if (productResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({
+          status: "error",
+          message: `Product not found: ${productId}`,
+        });
+      }
 
-      const saleResult = await client.query(
+      const product = productResult.rows[0];
+
+      const batchResult = await client.query(
         `
-        INSERT INTO sales (
-          organisation_id,
-          customer_id,
-          user_id,
-          sale_number,
-          subtotal,
-          discount_amount,
-          tax_amount,
-          total_amount,
-          payment_method,
-          cash_amount,
-          card_amount,
-          advance_amount,
-          balance_amount,
-          advance_payment_method,
-          final_payment_method,
-          status,
-          completed_at
+        SELECT *
+        FROM product_stock_batches
+        WHERE id = $1
+        AND product_id = $2
+        AND organisation_id = $3
+        AND is_active = true
+        `,
+        [stockBatchId, productId, req.user.organisation_id]
+      );
+
+      if (batchResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          status: "error",
+          message: `Selected stock batch was not found for ${product.name}`,
+        });
+      }
+
+      const batch = batchResult.rows[0];
+
+      if (Number(batch.quantity || 0) <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          status: "error",
+          message: `Selected stock batch for ${product.name} has no available stock`,
+        });
+      }
+
+      if (Number(batch.quantity) < Number(quantity)) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          status: "error",
+          message: `Not enough stock in selected batch for ${product.name}. Available batch stock: ${batch.quantity}`,
+        });
+      }
+
+      const unitPrice = Number(batch.selling_price || 0);
+      const totalPrice = unitPrice * Number(quantity);
+
+      subtotal += totalPrice;
+
+      saleItems.push({
+        productId: product.id,
+        productName: product.name,
+        stockBatchId: batch.id,
+        quantity: Number(quantity),
+        unitPrice,
+        totalPrice,
+      });
+    }
+
+    const orgResult = await client.query(
+      `
+      SELECT invoice_prefix
+      FROM organisations
+      WHERE id = $1
+      `,
+      [req.user.organisation_id]
+    );
+
+    const organisation = orgResult.rows[0];
+
+    const finalDiscount = Number(discountAmount || 0);
+    const finalTaxAmount = Number(taxAmount || 0);
+    const totalAmount = subtotal - finalDiscount + finalTaxAmount;
+
+    if (totalAmount <= 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        status: "error",
+        message: "Sale total must be greater than 0",
+      });
+    }
+
+    let finalCashAmount = 0;
+    let finalCardAmount = 0;
+    let finalAdvanceAmount = 0;
+    let finalBalanceAmount = 0;
+    let advancePaymentMethod = null;
+    let finalPaymentMethod = null;
+
+    if (finalSaleStatus === "pending") {
+      finalAdvanceAmount = Number(advanceAmount || 0);
+
+      if (finalAdvanceAmount <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          status: "error",
+          message: "Advance amount must be greater than 0 for pending sales",
+        });
+      }
+
+      if (finalAdvanceAmount >= totalAmount) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Advance amount must be less than total amount. Use completed sale if fully paid.",
+        });
+      }
+
+      if (paymentMethod === "cash") {
+        finalCashAmount = finalAdvanceAmount;
+        finalCardAmount = 0;
+      } else if (paymentMethod === "card") {
+        finalCashAmount = 0;
+        finalCardAmount = finalAdvanceAmount;
+      } else {
+        finalCashAmount = Number(cashAmount || 0);
+        finalCardAmount = Number(cardAmount || 0);
+
+        const paidTotal = finalCashAmount + finalCardAmount;
+
+        if (
+          Number(paidTotal.toFixed(2)) !==
+          Number(finalAdvanceAmount.toFixed(2))
+        ) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message: "Cash amount + card amount must match the advance amount",
+          });
+        }
+      }
+
+      finalBalanceAmount = totalAmount - finalAdvanceAmount;
+      advancePaymentMethod = paymentMethod;
+    } else {
+      if (paymentMethod === "cash") {
+        finalCashAmount = totalAmount;
+        finalCardAmount = 0;
+      } else if (paymentMethod === "card") {
+        finalCashAmount = 0;
+        finalCardAmount = totalAmount;
+      } else {
+        finalCashAmount = Number(cashAmount || 0);
+        finalCardAmount = Number(cardAmount || 0);
+
+        const paidTotal = finalCashAmount + finalCardAmount;
+
+        if (Number(paidTotal.toFixed(2)) !== Number(totalAmount.toFixed(2))) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message: "Cash amount + card amount must match the total amount",
+          });
+        }
+      }
+
+      finalAdvanceAmount = 0;
+      finalBalanceAmount = 0;
+      finalPaymentMethod = paymentMethod;
+    }
+
+    const saleCountResult = await client.query(
+      `
+      SELECT COUNT(*) AS count
+      FROM sales
+      WHERE organisation_id = $1
+      `,
+      [req.user.organisation_id]
+    );
+
+    const saleNumber = `${organisation.invoice_prefix || "INV"}-${String(
+      Number(saleCountResult.rows[0].count) + 1
+    ).padStart(5, "0")}`;
+
+    const saleResult = await client.query(
+      `
+      INSERT INTO sales (
+        organisation_id,
+        customer_id,
+        user_id,
+        sale_number,
+        subtotal,
+        discount_amount,
+        tax_amount,
+        total_amount,
+        payment_method,
+        cash_amount,
+        card_amount,
+        advance_amount,
+        balance_amount,
+        advance_payment_method,
+        final_payment_method,
+        status,
+        completed_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      RETURNING *
+      `,
+      [
+        req.user.organisation_id,
+        customerId || null,
+        req.user.id,
+        saleNumber,
+        subtotal,
+        finalDiscount,
+        finalTaxAmount,
+        totalAmount,
+        paymentMethod,
+        finalCashAmount,
+        finalCardAmount,
+        finalAdvanceAmount,
+        finalBalanceAmount,
+        advancePaymentMethod,
+        finalPaymentMethod,
+        finalSaleStatus,
+        finalSaleStatus === "completed" ? new Date() : null,
+      ]
+    );
+
+    const sale = saleResult.rows[0];
+
+    for (const item of saleItems) {
+      await client.query(
+        `
+        INSERT INTO sale_items (
+          sale_id,
+          product_id,
+          stock_batch_id,
+          product_name,
+          quantity,
+          unit_price,
+          total_price
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-        RETURNING *
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         `,
         [
-          req.user.organisation_id,
-          customerId || null,
-          req.user.id,
-          saleNumber,
-          subtotal,
-          finalDiscount,
-          finalTaxAmount,
-          totalAmount,
-          paymentMethod,
-          finalCashAmount,
-          finalCardAmount,
-          finalAdvanceAmount,
-          finalBalanceAmount,
-          advancePaymentMethod,
-          finalPaymentMethod,
-          finalSaleStatus,
-          finalSaleStatus === "completed" ? new Date() : null,
+          sale.id,
+          item.productId,
+          item.stockBatchId,
+          item.productName,
+          item.quantity,
+          item.unitPrice,
+          item.totalPrice,
         ]
       );
 
-      const sale = saleResult.rows[0];
+      await client.query(
+        `
+        UPDATE product_stock_batches
+        SET quantity = quantity - $1,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2
+        AND product_id = $3
+        AND organisation_id = $4
+        `,
+        [
+          item.quantity,
+          item.stockBatchId,
+          item.productId,
+          req.user.organisation_id,
+        ]
+      );
 
-      for (const item of saleItems) {
-        await client.query(
-          `
-          INSERT INTO sale_items (
-            sale_id,
-            product_id,
-            product_name,
-            quantity,
-            unit_price,
-            total_price
-          )
-          VALUES ($1, $2, $3, $4, $5, $6)
-          `,
-          [
-            sale.id,
-            item.productId,
-            item.productName,
-            item.quantity,
-            item.unitPrice,
-            item.totalPrice,
-          ]
-        );
-
-        await client.query(
-          `
-          UPDATE products
-          SET stock_quantity = stock_quantity - $1,
-              updated_at = CURRENT_TIMESTAMP
-          WHERE id = $2 AND organisation_id = $3
-          `,
-          [item.quantity, item.productId, req.user.organisation_id]
-        );
-
-        await client.query(
-          `
-          INSERT INTO stock_movements (
-            organisation_id,
-            product_id,
-            movement_type,
-            quantity,
-            reason,
-            created_by
-          )
-          VALUES ($1, $2, $3, $4, $5, $6)
-          `,
-          [
-            req.user.organisation_id,
-            item.productId,
-            finalSaleStatus === "pending" ? "pending_sale" : "sale",
-            -item.quantity,
-            finalSaleStatus === "pending"
-              ? `Pending sale ${saleNumber}`
-              : `Sale ${saleNumber}`,
-            req.user.id,
-          ]
-        );
-      }
+      await syncProductStockFromBatches(
+        client,
+        item.productId,
+        req.user.organisation_id
+      );
 
       await client.query(
         `
-        INSERT INTO audit_logs (
+        INSERT INTO stock_movements (
           organisation_id,
-          user_id,
-          action,
-          table_name,
-          record_id,
-          details
+          product_id,
+          movement_type,
+          quantity,
+          reason,
+          created_by
         )
         VALUES ($1, $2, $3, $4, $5, $6)
         `,
         [
           req.user.organisation_id,
+          item.productId,
+          finalSaleStatus === "pending" ? "pending_sale" : "sale",
+          -item.quantity,
+          finalSaleStatus === "pending"
+            ? `Pending sale ${saleNumber}`
+            : `Sale ${saleNumber}`,
           req.user.id,
-          finalSaleStatus === "pending" ? "created pending sale" : "created sale",
-          "sales",
-          sale.id,
-          JSON.stringify({
-            saleNumber,
-            status: finalSaleStatus,
-            paymentMethod,
-            totalAmount,
-            advanceAmount: finalAdvanceAmount,
-            balanceAmount: finalBalanceAmount,
-            cashAmount: finalCashAmount,
-            cardAmount: finalCardAmount,
-          }),
         ]
       );
-
-      await client.query("COMMIT");
-
-      res.status(201).json({
-        status: "success",
-        message:
-          finalSaleStatus === "pending"
-            ? "Pending sale created successfully"
-            : "Sale completed successfully",
-        sale: {
-          ...sale,
-          items: saleItems,
-        },
-      });
-    } catch (error) {
-      await client.query("ROLLBACK");
-
-      console.error("Create sale error:", error.message);
-
-      res.status(500).json({
-        status: "error",
-        message: "Failed to create sale",
-        error: error.message,
-      });
-    } finally {
-      client.release();
     }
+
+    await client.query(
+      `
+      INSERT INTO audit_logs (
+        organisation_id,
+        user_id,
+        action,
+        table_name,
+        record_id,
+        details
+      )
+      VALUES ($1, $2, $3, $4, $5, $6)
+      `,
+      [
+        req.user.organisation_id,
+        req.user.id,
+        finalSaleStatus === "pending" ? "created pending sale" : "created sale",
+        "sales",
+        sale.id,
+        JSON.stringify({
+          saleNumber,
+          status: finalSaleStatus,
+          paymentMethod,
+          totalAmount,
+          advanceAmount: finalAdvanceAmount,
+          balanceAmount: finalBalanceAmount,
+          cashAmount: finalCashAmount,
+          cardAmount: finalCardAmount,
+        }),
+      ]
+    );
+
+    await client.query("COMMIT");
+
+    res.status(201).json({
+      status: "success",
+      message:
+        finalSaleStatus === "pending"
+          ? "Pending sale created successfully"
+          : "Sale completed successfully",
+      sale: {
+        ...sale,
+        items: saleItems,
+      },
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    console.error("Create sale error:", error.message);
+
+    res.status(500).json({
+      status: "error",
+      message: "Failed to create sale",
+      error: error.message,
+    });
+  } finally {
+    client.release();
   }
-);
+});
 
 // Complete pending sale
 app.patch(
@@ -3950,15 +4055,28 @@ app.patch(
       );
 
       for (const item of itemsResult.rows) {
-        if (item.product_id) {
+        if (item.product_id && item.stock_batch_id) {
           await client.query(
             `
-            UPDATE products
-            SET stock_quantity = stock_quantity + $1,
+            UPDATE product_stock_batches
+            SET quantity = quantity + $1,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = $2 AND organisation_id = $3
+            WHERE id = $2
+            AND product_id = $3
+            AND organisation_id = $4
             `,
-            [item.quantity, item.product_id, req.user.organisation_id]
+            [
+              item.quantity,
+              item.stock_batch_id,
+              item.product_id,
+              req.user.organisation_id,
+            ]
+          );
+
+          await syncProductStockFromBatches(
+            client,
+            item.product_id,
+            req.user.organisation_id
           );
 
           await client.query(
@@ -4031,7 +4149,7 @@ app.patch(
 
       res.json({
         status: "success",
-        message: "Pending sale cancelled successfully and stock returned",
+        message: "Pending sale cancelled successfully and stock returned to original batch",
         sale: updatedSaleResult.rows[0],
       });
     } catch (error) {
@@ -4050,7 +4168,7 @@ app.patch(
   }
 );
 
-// Edit sale
+// Edit sale - batch-safe permanent version
 app.patch(
   "/api/sales/:id",
   authMiddleware,
@@ -4060,6 +4178,7 @@ app.patch(
 
     try {
       const { id } = req.params;
+
       const {
         items,
         discountAmount,
@@ -4084,13 +4203,22 @@ app.patch(
         });
       }
 
+      if (!["cash", "card", "split"].includes(paymentMethod)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Payment method must be cash, card, or split",
+        });
+      }
+
       await client.query("BEGIN");
 
       const saleCheck = await client.query(
         `
         SELECT *
         FROM sales
-        WHERE id = $1 AND organisation_id = $2
+        WHERE id = $1
+        AND organisation_id = $2
+        FOR UPDATE
         `,
         [id, req.user.organisation_id]
       );
@@ -4105,6 +4233,14 @@ app.patch(
 
       const oldSale = saleCheck.rows[0];
 
+      if (oldSale.status !== "completed") {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          status: "error",
+          message: "Only completed sales can be edited",
+        });
+      }
+
       const oldItemsResult = await client.query(
         `
         SELECT *
@@ -4114,33 +4250,85 @@ app.patch(
         [id]
       );
 
+      // 1. Return old sale quantities back to their original stock batches
       for (const oldItem of oldItemsResult.rows) {
-        if (oldItem.product_id) {
+        if (oldItem.product_id && oldItem.stock_batch_id) {
           await client.query(
             `
-            UPDATE products
-            SET stock_quantity = stock_quantity + $1,
+            UPDATE product_stock_batches
+            SET quantity = quantity + $1,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = $2 AND organisation_id = $3
+            WHERE id = $2
+            AND product_id = $3
+            AND organisation_id = $4
             `,
-            [oldItem.quantity, oldItem.product_id, req.user.organisation_id]
+            [
+              oldItem.quantity,
+              oldItem.stock_batch_id,
+              oldItem.product_id,
+              req.user.organisation_id,
+            ]
+          );
+
+          await syncProductStockFromBatches(
+            client,
+            oldItem.product_id,
+            req.user.organisation_id
+          );
+
+          await client.query(
+            `
+            INSERT INTO stock_movements (
+              organisation_id,
+              product_id,
+              movement_type,
+              quantity,
+              reason,
+              created_by
+            )
+            VALUES ($1, $2, 'edit_reverse', $3, $4, $5)
+            `,
+            [
+              req.user.organisation_id,
+              oldItem.product_id,
+              oldItem.quantity,
+              `Returned old sale item during edit of sale ${oldSale.sale_number}`,
+              req.user.id,
+            ]
           );
         }
       }
 
-      await client.query(`DELETE FROM sale_items WHERE sale_id = $1`, [id]);
+      // 2. Remove old sale item records
+      await client.query(
+        `
+        DELETE FROM sale_items
+        WHERE sale_id = $1
+        `,
+        [id]
+      );
 
+      // 3. Validate new sale items against selected stock batches
       let subtotal = 0;
       const newSaleItems = [];
 
       for (const item of items) {
-        const { productId, quantity } = item;
+        const { productId, stockBatchId, quantity } = item;
+
+        if (!productId || !stockBatchId || !quantity || Number(quantity) <= 0) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message:
+              "Each item must have productId, stockBatchId, and valid quantity",
+          });
+        }
 
         const productResult = await client.query(
           `
-          SELECT id, name, selling_price, stock_quantity
+          SELECT id, name
           FROM products
-          WHERE id = $1 
+          WHERE id = $1
           AND organisation_id = $2
           AND is_active = true
           `,
@@ -4157,15 +4345,38 @@ app.patch(
 
         const product = productResult.rows[0];
 
-        if (Number(product.stock_quantity) < Number(quantity)) {
+        const batchResult = await client.query(
+          `
+          SELECT *
+          FROM product_stock_batches
+          WHERE id = $1
+          AND product_id = $2
+          AND organisation_id = $3
+          AND is_active = true
+          FOR UPDATE
+          `,
+          [stockBatchId, productId, req.user.organisation_id]
+        );
+
+        if (batchResult.rows.length === 0) {
           await client.query("ROLLBACK");
           return res.status(400).json({
             status: "error",
-            message: `Not enough stock for ${product.name}. Available stock: ${product.stock_quantity}`,
+            message: `Selected stock batch was not found for ${product.name}`,
           });
         }
 
-        const unitPrice = Number(product.selling_price);
+        const batch = batchResult.rows[0];
+
+        if (Number(batch.quantity || 0) < Number(quantity)) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            status: "error",
+            message: `Not enough stock in selected batch for ${product.name}. Available batch stock: ${batch.quantity}`,
+          });
+        }
+
+        const unitPrice = Number(batch.selling_price || 0);
         const totalPrice = unitPrice * Number(quantity);
 
         subtotal += totalPrice;
@@ -4173,6 +4384,7 @@ app.patch(
         newSaleItems.push({
           productId: product.id,
           productName: product.name,
+          stockBatchId: batch.id,
           quantity: Number(quantity),
           unitPrice,
           totalPrice,
@@ -4183,13 +4395,31 @@ app.patch(
       const finalTaxAmount = Number(taxAmount || 0);
       const totalAmount = subtotal - finalDiscount + finalTaxAmount;
 
-      const finalCashAmount =
-        paymentMethod === "cash" ? totalAmount : Number(cashAmount || 0);
+      if (totalAmount <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          status: "error",
+          message: "Sale total must be greater than 0",
+        });
+      }
 
-      const finalCardAmount =
-        paymentMethod === "card" ? totalAmount : Number(cardAmount || 0);
+      let finalCashAmount = 0;
+      let finalCardAmount = 0;
+
+      if (paymentMethod === "cash") {
+        finalCashAmount = totalAmount;
+        finalCardAmount = 0;
+      }
+
+      if (paymentMethod === "card") {
+        finalCashAmount = 0;
+        finalCardAmount = totalAmount;
+      }
 
       if (paymentMethod === "split") {
+        finalCashAmount = Number(cashAmount || 0);
+        finalCardAmount = Number(cardAmount || 0);
+
         const paidTotal = finalCashAmount + finalCardAmount;
 
         if (Number(paidTotal.toFixed(2)) !== Number(totalAmount.toFixed(2))) {
@@ -4201,6 +4431,7 @@ app.patch(
         }
       }
 
+      // 4. Update sale totals
       const updatedSaleResult = await client.query(
         `
         UPDATE sales
@@ -4212,10 +4443,15 @@ app.patch(
           payment_method = $5,
           cash_amount = $6,
           card_amount = $7,
+          advance_amount = 0,
+          balance_amount = 0,
+          advance_payment_method = NULL,
+          final_payment_method = $5,
           is_edited = TRUE,
           edit_reason = $8,
           updated_at = CURRENT_TIMESTAMP
-        WHERE id = $9 AND organisation_id = $10
+        WHERE id = $9
+        AND organisation_id = $10
         RETURNING *
         `,
         [
@@ -4234,22 +4470,25 @@ app.patch(
 
       const updatedSale = updatedSaleResult.rows[0];
 
+      // 5. Insert new sale items and deduct selected stock batches
       for (const item of newSaleItems) {
         await client.query(
           `
           INSERT INTO sale_items (
             sale_id,
             product_id,
+            stock_batch_id,
             product_name,
             quantity,
             unit_price,
             total_price
           )
-          VALUES ($1, $2, $3, $4, $5, $6)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
           `,
           [
             id,
             item.productId,
+            item.stockBatchId,
             item.productName,
             item.quantity,
             item.unitPrice,
@@ -4259,12 +4498,46 @@ app.patch(
 
         await client.query(
           `
-          UPDATE products
-          SET stock_quantity = stock_quantity - $1,
+          UPDATE product_stock_batches
+          SET quantity = quantity - $1,
               updated_at = CURRENT_TIMESTAMP
-          WHERE id = $2 AND organisation_id = $3
+          WHERE id = $2
+          AND product_id = $3
+          AND organisation_id = $4
           `,
-          [item.quantity, item.productId, req.user.organisation_id]
+          [
+            item.quantity,
+            item.stockBatchId,
+            item.productId,
+            req.user.organisation_id,
+          ]
+        );
+
+        await syncProductStockFromBatches(
+          client,
+          item.productId,
+          req.user.organisation_id
+        );
+
+        await client.query(
+          `
+          INSERT INTO stock_movements (
+            organisation_id,
+            product_id,
+            movement_type,
+            quantity,
+            reason,
+            created_by
+          )
+          VALUES ($1, $2, 'edit_sale', $3, $4, $5)
+          `,
+          [
+            req.user.organisation_id,
+            item.productId,
+            -item.quantity,
+            `Deducted new sale item during edit of sale ${oldSale.sale_number}`,
+            req.user.id,
+          ]
         );
       }
 
@@ -4291,6 +4564,8 @@ app.patch(
             previousTotal: oldSale.total_amount,
             newTotal: totalAmount,
             reason: editReason,
+            oldItemCount: oldItemsResult.rows.length,
+            newItemCount: newSaleItems.length,
           }),
         ]
       );
@@ -4299,7 +4574,7 @@ app.patch(
 
       res.json({
         status: "success",
-        message: "Sale edited successfully",
+        message: "Sale edited successfully and stock batches updated correctly",
         sale: {
           ...updatedSale,
           items: newSaleItems,
@@ -4414,125 +4689,6 @@ app.get(
         message: "Failed to get sale",
         error: error.message,
       });
-    }
-  }
-);
-
-// Refund / cancel sale
-app.patch(
-  "/api/sales/:id/refund",
-  authMiddleware,
-  requirePermission("sales.refund"),
-  async (req, res) => {
-    const client = await pool.connect();
-
-    try {
-      const { id } = req.params;
-      const { reason } = req.body;
-
-      await client.query("BEGIN");
-
-      const saleResult = await client.query(
-        `
-        SELECT *
-        FROM sales
-        WHERE id = $1 AND organisation_id = $2
-        `,
-        [id, req.user.organisation_id]
-      );
-
-      if (saleResult.rows.length === 0) {
-        await client.query("ROLLBACK");
-        return res.status(404).json({
-          status: "error",
-          message: "Sale not found",
-        });
-      }
-
-      const sale = saleResult.rows[0];
-
-      if (sale.status === "refunded") {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          status: "error",
-          message: "Sale is already refunded",
-        });
-      }
-
-      const itemsResult = await client.query(
-        `
-        SELECT *
-        FROM sale_items
-        WHERE sale_id = $1
-        `,
-        [id]
-      );
-
-      for (const item of itemsResult.rows) {
-        if (item.product_id) {
-          await client.query(
-            `
-            UPDATE products
-            SET stock_quantity = stock_quantity + $1,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $2 AND organisation_id = $3
-            `,
-            [item.quantity, item.product_id, req.user.organisation_id]
-          );
-
-          await client.query(
-            `
-            INSERT INTO stock_movements (
-              organisation_id,
-              product_id,
-              movement_type,
-              quantity,
-              reason,
-              created_by
-            )
-            VALUES ($1, $2, 'refund', $3, $4, $5)
-            `,
-            [
-              req.user.organisation_id,
-              item.product_id,
-              item.quantity,
-              reason || `Refund sale ${sale.sale_number}`,
-              req.user.id,
-            ]
-          );
-        }
-      }
-
-      const updatedSaleResult = await client.query(
-        `
-        UPDATE sales
-        SET status = 'refunded',
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = $1 AND organisation_id = $2
-        RETURNING *
-        `,
-        [id, req.user.organisation_id]
-      );
-
-      await client.query("COMMIT");
-
-      res.json({
-        status: "success",
-        message: "Sale refunded successfully",
-        sale: updatedSaleResult.rows[0],
-      });
-    } catch (error) {
-      await client.query("ROLLBACK");
-
-      console.error("Refund sale error:", error.message);
-
-      res.status(500).json({
-        status: "error",
-        message: "Failed to refund sale",
-        error: error.message,
-      });
-    } finally {
-      client.release();
     }
   }
 );
@@ -4703,9 +4859,7 @@ app.post(
           });
         }
 
-        const saleItem = saleItems.find(
-          (row) => row.id === saleItemId
-        );
+        const saleItem = saleItems.find((row) => row.id === saleItemId);
 
         if (!saleItem) {
           await client.query("ROLLBACK");
@@ -4827,16 +4981,30 @@ app.post(
         );
 
         if (refundType === "change_of_mind") {
-          await client.query(
-            `
-            UPDATE products
-            SET stock_quantity = stock_quantity + $1,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $2
-            AND organisation_id = $3
-            `,
-            [quantity, saleItem.product_id, req.user.organisation_id]
-          );
+          if (saleItem.stock_batch_id) {
+            await client.query(
+              `
+              UPDATE product_stock_batches
+              SET quantity = quantity + $1,
+                  updated_at = CURRENT_TIMESTAMP
+              WHERE id = $2
+              AND product_id = $3
+              AND organisation_id = $4
+              `,
+              [
+                quantity,
+                saleItem.stock_batch_id,
+                saleItem.product_id,
+                req.user.organisation_id,
+              ]
+            );
+
+            await syncProductStockFromBatches(
+              client,
+              saleItem.product_id,
+              req.user.organisation_id
+            );
+          }
 
           await client.query(
             `
@@ -5063,6 +5231,8 @@ app.post(
     try {
       const { productId, quantity, damageSource, reason, remark } = req.body;
 
+      const quantityNumber = Number(quantity);
+
       if (!productId) {
         return res.status(400).json({
           status: "error",
@@ -5070,7 +5240,7 @@ app.post(
         });
       }
 
-      if (!quantity || Number(quantity) <= 0) {
+      if (!quantityNumber || quantityNumber <= 0) {
         return res.status(400).json({
           status: "error",
           message: "Quantity must be greater than 0",
@@ -5114,23 +5284,63 @@ app.post(
 
       const product = productResult.rows[0];
 
-      if (Number(product.stock_quantity) < Number(quantity)) {
+      const batchesResult = await client.query(
+        `
+        SELECT *
+        FROM product_stock_batches
+        WHERE product_id = $1
+        AND organisation_id = $2
+        AND is_active = true
+        AND quantity > 0
+        ORDER BY selling_price DESC, created_at ASC
+        `,
+        [productId, req.user.organisation_id]
+      );
+
+      const availableBatchStock = batchesResult.rows.reduce(
+        (sum, batch) => sum + Number(batch.quantity || 0),
+        0
+      );
+
+      if (availableBatchStock < quantityNumber) {
         await client.query("ROLLBACK");
         return res.status(400).json({
           status: "error",
-          message: `Not enough stock. Available stock: ${product.stock_quantity}`,
+          message: `Not enough stock. Available stock: ${availableBatchStock}`,
         });
       }
 
-      await client.query(
-        `
-        UPDATE products
-        SET stock_quantity = stock_quantity - $1,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = $2
-        AND organisation_id = $3
-        `,
-        [Number(quantity), productId, req.user.organisation_id]
+      let remainingToRemove = quantityNumber;
+
+      for (const batch of batchesResult.rows) {
+        if (remainingToRemove <= 0) break;
+
+        const deductQty = Math.min(Number(batch.quantity), remainingToRemove);
+
+        await client.query(
+          `
+          UPDATE product_stock_batches
+          SET quantity = quantity - $1,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = $2
+          AND product_id = $3
+          AND organisation_id = $4
+          `,
+          [
+            deductQty,
+            batch.id,
+            productId,
+            req.user.organisation_id,
+          ]
+        );
+
+        remainingToRemove -= deductQty;
+      }
+
+      await syncProductStockFromBatches(
+        client,
+        productId,
+        req.user.organisation_id
       );
 
       const damageResult = await client.query(
@@ -5152,7 +5362,7 @@ app.post(
           req.user.organisation_id,
           productId,
           product.name,
-          Number(quantity),
+          quantityNumber,
           damageSource,
           reason,
           remark || null,
@@ -5177,7 +5387,7 @@ app.post(
         [
           req.user.organisation_id,
           productId,
-          -Number(quantity),
+          -quantityNumber,
           `${damageSource}: ${reason}`,
           req.user.id,
         ]
@@ -5203,7 +5413,7 @@ app.post(
           damage.id,
           JSON.stringify({
             productName: product.name,
-            quantity: Number(quantity),
+            quantity: quantityNumber,
             damageSource,
             reason,
             remark,
@@ -5215,7 +5425,7 @@ app.post(
 
       res.status(201).json({
         status: "success",
-        message: "Damaged item recorded and stock reduced",
+        message: "Damaged item recorded and stock reduced from stock batches",
         damage,
       });
     } catch (error) {

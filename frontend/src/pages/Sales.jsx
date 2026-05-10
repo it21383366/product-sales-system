@@ -63,7 +63,9 @@ function Sales() {
   const [form, setForm] = useState({
     saleStatus: defaultSaleStatus,
     paymentMethod: "cash",
+    discountType: "value",
     discountAmount: "",
+    taxType: "value",
     taxAmount: "",
     advanceAmount: "",
     cashAmount: "",
@@ -79,6 +81,10 @@ function Sales() {
     return sales.slice(start, start + SALES_PER_PAGE);
   }, [sales, page]);
 
+  const availableProducts = useMemo(() => {
+    return products.filter((product) => Number(product.stock_quantity || 0) > 0);
+  }, [products]);
+
   const fetchSales = async () => {
     try {
       const response = await api.get("/api/sales");
@@ -90,7 +96,12 @@ function Sales() {
 
   const fetchProducts = async () => {
     try {
-      const response = await api.get("/api/products");
+      const response = await api.get("/api/products", {
+        params: {
+          t: Date.now(),
+        },
+      });
+
       setProducts(response.data.products);
     } catch (err) {
       setError(err.response?.data?.message || "Failed to load products");
@@ -116,16 +127,23 @@ function Sales() {
     return products.find((product) => product.id === productId);
   };
 
-  const fetchProductBatches = async (productId) => {
+  const fetchProductBatches = async (productId, forceRefresh = false) => {
     try {
       if (!productId) return [];
 
-      if (stockBatchesByProduct[productId]) {
+      if (!forceRefresh && stockBatchesByProduct[productId]) {
         return stockBatchesByProduct[productId];
       }
 
-      const response = await api.get(`/api/products/${productId}/stock-batches`);
-      const batches = response.data.batches || [];
+      const response = await api.get(`/api/products/${productId}/stock-batches`, {
+        params: {
+          t: Date.now(),
+        },
+      });
+
+      const batches = (response.data.batches || []).filter(
+        (batch) => Number(batch.quantity || 0) > 0
+      );
 
       setStockBatchesByProduct((current) => ({
         ...current,
@@ -150,9 +168,21 @@ function Sales() {
     return sum + Number(item.unitPrice || 0) * Number(item.quantity || 0);
   }, 0);
 
-  const discountAmount = Number(form.discountAmount || 0);
-  const taxAmount = Number(form.taxAmount || 0);
-  const totalAmount = subtotal - discountAmount + taxAmount;
+  const rawDiscount = Number(form.discountAmount || 0);
+  const rawTax = Number(form.taxAmount || 0);
+
+  const discountAmount =
+    form.discountType === "percentage"
+      ? (subtotal * rawDiscount) / 100
+      : rawDiscount;
+
+  const taxableAmount = Math.max(subtotal - discountAmount, 0);
+
+  const taxAmount =
+    form.taxType === "percentage" ? (taxableAmount * rawTax) / 100 : rawTax;
+
+  const totalAmount = taxableAmount + taxAmount;
+
   const advanceAmount = Number(form.advanceAmount || 0);
   const balanceAmount =
     form.saleStatus === "pending" ? totalAmount - advanceAmount : 0;
@@ -161,7 +191,9 @@ function Sales() {
     setForm({
       saleStatus: defaultSaleStatus,
       paymentMethod: "cash",
+      discountType: "value",
       discountAmount: "",
+      taxType: "value",
       taxAmount: "",
       advanceAmount: "",
       cashAmount: "",
@@ -171,10 +203,12 @@ function Sales() {
     });
   };
 
-  const openNewSale = () => {
+  const openNewSale = async () => {
     setEditMode(false);
     setEditingSaleId(null);
+    setStockBatchesByProduct({});
     resetForm();
+    await fetchProducts();
     setShowSaleModal(true);
     setShowReviewModal(false);
     setSaleModalError("");
@@ -206,7 +240,9 @@ function Sales() {
       setForm({
         saleStatus: "completed",
         paymentMethod: sale.payment_method || "cash",
+        discountType: "value",
         discountAmount: Number(sale.discount_amount || 0),
+        taxType: "value",
         taxAmount: Number(sale.tax_amount || 0),
         advanceAmount: "",
         cashAmount: sale.cash_amount || "",
@@ -247,24 +283,41 @@ function Sales() {
   };
 
   const handleProductChange = async (index, productId) => {
-    const batches = await fetchProductBatches(productId);
+    const batches = await fetchProductBatches(productId, true);
     const firstBatch = batches[0];
     const product = getProduct(productId);
 
     const updatedItems = [...form.items];
 
+    if (!firstBatch) {
+      updatedItems[index] = {
+        ...updatedItems[index],
+        productId,
+        stockBatchId: "",
+        quantity: 1,
+        unitPrice: 0,
+        availableQuantity: 0,
+      };
+
+      setForm({
+        ...form,
+        items: updatedItems,
+      });
+
+      setSaleModalError(
+        `${product?.name || "Selected product"} has no available stock batches`
+      );
+
+      return;
+    }
+
     updatedItems[index] = {
       ...updatedItems[index],
       productId,
-      stockBatchId: firstBatch?.id || "",
+      stockBatchId: firstBatch.id,
       quantity: 1,
-      unitPrice: Number(
-        firstBatch?.selling_price ||
-          product?.highest_selling_price ||
-          product?.selling_price ||
-          0
-      ),
-      availableQuantity: Number(firstBatch?.quantity || product?.stock_quantity || 0),
+      unitPrice: Number(firstBatch.selling_price || 0),
+      availableQuantity: Number(firstBatch.quantity || 0),
     };
 
     setForm({
@@ -316,6 +369,18 @@ function Sales() {
   };
 
   const validatePayment = () => {
+    if (discountAmount < 0 || taxAmount < 0) {
+      return "Discount and tax cannot be negative";
+    }
+
+    if (form.discountType === "percentage" && rawDiscount > 100) {
+      return "Discount percentage cannot be more than 100%";
+    }
+
+    if (form.taxType === "percentage" && rawTax > 100) {
+      return "Tax percentage cannot be more than 100%";
+    }
+
     if (totalAmount <= 0) {
       return "Sale total must be greater than 0";
     }
@@ -417,8 +482,8 @@ function Sales() {
       const payload = {
         saleStatus: form.saleStatus,
         paymentMethod: form.paymentMethod,
-        discountAmount: Number(form.discountAmount || 0),
-        taxAmount: Number(form.taxAmount || 0),
+        discountAmount: Number(discountAmount || 0),
+        taxAmount: Number(taxAmount || 0),
         advanceAmount: Number(form.advanceAmount || 0),
         cashAmount: Number(form.cashAmount || 0),
         cardAmount: Number(form.cardAmount || 0),
@@ -445,6 +510,7 @@ function Sales() {
       }
 
       closeModals();
+      setStockBatchesByProduct({});
 
       await fetchSales();
       await fetchProducts();
@@ -571,6 +637,7 @@ function Sales() {
 
       await fetchSales();
       await fetchProducts();
+      setStockBatchesByProduct({});
     } catch (err) {
       setCancelModalError(
         err.response?.data?.message || "Failed to cancel pending sale"
@@ -698,6 +765,7 @@ function Sales() {
 
       await fetchSales();
       await fetchProducts();
+      setStockBatchesByProduct({});
     } catch (err) {
       setRefundModalError(
         err.response?.data?.message || "Failed to create refund"
@@ -1173,7 +1241,7 @@ function Sales() {
                         onChange={(value) => handleProductChange(index, value)}
                         placeholder="Select product"
                         searchPlaceholder="Search product by name or SKU..."
-                        options={products.map((product) => ({
+                        options={availableProducts.map((product) => ({
                           value: product.id,
                           label: `${product.name} ${
                             product.sku ? `(${product.sku})` : ""
@@ -1187,14 +1255,24 @@ function Sales() {
                         label="Stock Batch"
                         value={item.stockBatchId}
                         onChange={(value) => handleBatchChange(index, value)}
-                        placeholder={item.productId ? "Select stock batch" : "Select product first"}
+                        placeholder={
+                          item.productId
+                            ? "Select stock batch"
+                            : "Select product first"
+                        }
                         searchPlaceholder="Search stock batch..."
-                        options={batchOptions.map((batch) => ({
-                          value: batch.id,
-                          label: `$${Number(batch.selling_price || 0).toFixed(2)} - ${
-                            batch.quantity
-                          } available${batch.supplier_name ? ` - ${batch.supplier_name}` : ""}`,
-                        }))}
+                        options={batchOptions
+                          .filter((batch) => Number(batch.quantity || 0) > 0)
+                          .map((batch) => ({
+                            value: batch.id,
+                            label: `$${Number(batch.selling_price || 0).toFixed(
+                              2
+                            )} - ${batch.quantity} available${
+                              batch.supplier_name
+                                ? ` - ${batch.supplier_name}`
+                                : ""
+                            }`,
+                          }))}
                       />
                     </div>
 
@@ -1244,8 +1322,8 @@ function Sales() {
                         </>
                       ) : product ? (
                         <>
-                          <strong>No batch selected.</strong> Select stock batch
-                          to apply the correct selling price.
+                          <strong>No available batch selected.</strong> Select a
+                          stock batch with available quantity.
                         </>
                       ) : (
                         "Select a product to load stock batches."
@@ -1265,24 +1343,68 @@ function Sales() {
 
               <div className="form-row">
                 <div>
-                  <label>Discount</label>
+                  <label>Discount Type</label>
+                  <select
+                    value={form.discountType}
+                    onChange={(e) => {
+                      setSaleModalError("");
+                      setForm({
+                        ...form,
+                        discountType: e.target.value,
+                        discountAmount: "",
+                      });
+                    }}
+                  >
+                    <option value="value">Discount by Value</option>
+                    <option value="percentage">Discount by Percentage</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label>
+                    Discount {form.discountType === "percentage" ? "(%)" : "($)"}
+                  </label>
                   <input
                     type="number"
                     value={form.discountAmount}
-                    placeholder="0.00"
+                    placeholder={
+                      form.discountType === "percentage" ? "Example: 10" : "0.00"
+                    }
                     onChange={(e) => {
                       setSaleModalError("");
                       setForm({ ...form, discountAmount: e.target.value });
                     }}
                   />
                 </div>
+              </div>
+
+              <div className="form-row">
+                <div>
+                  <label>Tax Type</label>
+                  <select
+                    value={form.taxType}
+                    onChange={(e) => {
+                      setSaleModalError("");
+                      setForm({
+                        ...form,
+                        taxType: e.target.value,
+                        taxAmount: "",
+                      });
+                    }}
+                  >
+                    <option value="value">Tax by Value</option>
+                    <option value="percentage">Tax by Percentage</option>
+                  </select>
+                </div>
 
                 <div>
-                  <label>Tax</label>
+                  <label>Tax {form.taxType === "percentage" ? "(%)" : "($)"}</label>
                   <input
                     type="number"
                     value={form.taxAmount}
-                    placeholder="0.00"
+                    placeholder={
+                      form.taxType === "percentage" ? "Example: 10" : "0.00"
+                    }
                     onChange={(e) => {
                       setSaleModalError("");
                       setForm({ ...form, taxAmount: e.target.value });
@@ -1385,12 +1507,20 @@ function Sales() {
 
                 <div>
                   <span>Discount</span>
-                  <strong>${discountAmount.toFixed(2)}</strong>
+                  <strong>
+                    {form.discountType === "percentage"
+                      ? `${rawDiscount}% = $${discountAmount.toFixed(2)}`
+                      : `$${discountAmount.toFixed(2)}`}
+                  </strong>
                 </div>
 
                 <div>
                   <span>Tax</span>
-                  <strong>${taxAmount.toFixed(2)}</strong>
+                  <strong>
+                    {form.taxType === "percentage"
+                      ? `${rawTax}% = $${taxAmount.toFixed(2)}`
+                      : `$${taxAmount.toFixed(2)}`}
+                  </strong>
                 </div>
 
                 <div>
@@ -1469,13 +1599,21 @@ function Sales() {
                 </div>
 
                 <div>
-                  <span>Tax</span>
-                  <strong>${taxAmount.toFixed(2)}</strong>
+                  <span>Discount</span>
+                  <strong>
+                    {form.discountType === "percentage"
+                      ? `${rawDiscount}% = $${discountAmount.toFixed(2)}`
+                      : `$${discountAmount.toFixed(2)}`}
+                  </strong>
                 </div>
 
                 <div>
-                  <span>Discount</span>
-                  <strong>${discountAmount.toFixed(2)}</strong>
+                  <span>Tax</span>
+                  <strong>
+                    {form.taxType === "percentage"
+                      ? `${rawTax}% = $${taxAmount.toFixed(2)}`
+                      : `$${taxAmount.toFixed(2)}`}
+                  </strong>
                 </div>
 
                 <div>
@@ -1563,7 +1701,6 @@ function Sales() {
         </div>
       )}
 
-      {/* Keep your existing complete/cancel/refund modals below unchanged */}
       {showCompleteModal && selectedPendingSale && (
         <div className="modal-overlay">
           <div className="confirm-modal">
