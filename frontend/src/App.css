@@ -2235,3 +2235,128 @@ th {
   color: #cbd5e1;
   border: 1px solid rgba(148, 163, 184, 0.35);
 }
+
+/* REPORTS PAGE */
+
+.reports-page {
+  width: 100%;
+}
+
+.reports-layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 18px;
+  align-items: start;
+}
+
+.reports-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: sticky;
+  top: 18px;
+}
+
+.report-nav-card {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border-light);
+  background: #111827;
+  color: var(--text);
+  border-radius: 16px;
+  padding: 16px;
+  cursor: pointer;
+  transition: 0.2s ease;
+}
+
+.report-nav-card strong {
+  display: block;
+  font-size: 15px;
+  margin-bottom: 6px;
+}
+
+.report-nav-card span {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.report-nav-card:hover,
+.report-nav-card.active {
+  border-color: rgba(96, 165, 250, 0.7);
+  background: rgba(37, 99, 235, 0.16);
+}
+
+.reports-main-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+.report-filter-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.report-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.report-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
+}
+
+.report-summary-card {
+  padding: 16px;
+  background: #172033;
+  border: 1px solid var(--border-light);
+  border-radius: 16px;
+}
+
+.report-summary-card span {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.report-summary-card strong {
+  display: block;
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.report-empty {
+  padding: 28px;
+  text-align: center;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.report-checkbox {
+  width: fit-content;
+}
+
+@media (max-width: 1000px) {
+  .reports-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .reports-sidebar {
+    position: static;
+  }
+
+  .report-actions {
+    flex-direction: column;
+  }
+}
