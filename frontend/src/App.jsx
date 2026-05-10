@@ -321,7 +321,13 @@ function App() {
             </section>
           )}
 
-          {activePage === "settings" && <Settings onSettingsUpdated={fetchSettings} />}
+          {activePage === "settings" && (
+            <Settings
+              onSettingsUpdated={(updatedSettings) => {
+                setSettings(updatedSettings);
+              }}
+            />
+          )}
 
           {activePage === "logs" && <Logs />}
         </main>

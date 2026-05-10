@@ -16,7 +16,6 @@ function Settings({ onSettingsUpdated }) {
     address: "",
     currency: "AUD",
     invoicePrefix: "INV",
-    themeColor: "#2563eb",
   });
 
   const savedUser = JSON.parse(localStorage.getItem("user") || "{}");
@@ -42,7 +41,6 @@ function Settings({ onSettingsUpdated }) {
         address: data.address || "",
         currency: data.currency || "AUD",
         invoicePrefix: data.invoice_prefix || "INV",
-        themeColor: data.theme_color || "#2563eb",
       });
     } catch (err) {
       setError(err.response?.data?.message || "Failed to load settings");
@@ -84,22 +82,18 @@ function Settings({ onSettingsUpdated }) {
 
   const handleSaveSettings = async () => {
     try {
-      setModalError("");
-      setError("");
-      setMessage("");
+        setModalError("");
+        setError("");
+        setMessage("");
 
-      const response = await api.patch("/api/settings", {
+        const response = await api.patch("/api/settings", {
         name: form.name,
         email: form.email,
         phone: form.phone,
         address: form.address,
         currency: form.currency,
         invoicePrefix: form.invoicePrefix,
-        themeColor: form.themeColor,
         });
-
-        setMessage("Settings updated successfully");
-        setShowReviewModal(false);
 
         const updatedSettings = response.data.settings;
 
@@ -112,17 +106,19 @@ function Settings({ onSettingsUpdated }) {
         address: updatedSettings.address || "",
         currency: updatedSettings.currency || "AUD",
         invoicePrefix: updatedSettings.invoice_prefix || "INV",
-        themeColor: updatedSettings.theme_color || "#2563eb",
         });
 
         if (onSettingsUpdated) {
-        onSettingsUpdated();
+        onSettingsUpdated(updatedSettings);
         }
+
+        setMessage("Settings updated successfully");
+        setShowReviewModal(false);
     } catch (err) {
-      setShowReviewModal(false);
-      setModalError(err.response?.data?.message || "Failed to update settings");
+        setShowReviewModal(false);
+        setModalError(err.response?.data?.message || "Failed to update settings");
     }
-  };
+    };
 
   if (!hasPermission("settings.manage")) {
     return (
@@ -217,15 +213,6 @@ function Settings({ onSettingsUpdated }) {
               </div>
             </div>
 
-            <label>Theme Color</label>
-            <input
-              name="themeColor"
-              type="color"
-              value={form.themeColor}
-              onChange={handleChange}
-              className="color-input"
-            />
-
             <div className="modal-actions">
               <button type="submit" className="primary-btn">
                 Review Settings
@@ -308,11 +295,6 @@ function Settings({ onSettingsUpdated }) {
               <div>
                 <span>Invoice Prefix</span>
                 <strong>{form.invoicePrefix || "-"}</strong>
-              </div>
-
-              <div>
-                <span>Theme Color</span>
-                <strong>{form.themeColor || "-"}</strong>
               </div>
 
               <div className="review-full">

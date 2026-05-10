@@ -1666,13 +1666,6 @@ th {
   color: var(--muted);
 }
 
-.color-input {
-  width: 80px !important;
-  height: 44px;
-  padding: 4px !important;
-  cursor: pointer;
-}
-
 .settings-preview-card {
   background: #111827;
   border: 1px solid var(--border);
