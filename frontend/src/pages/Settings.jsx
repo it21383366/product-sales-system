@@ -27,15 +27,29 @@ function Settings({ onSettingsUpdated }) {
     return permissions.includes(permission);
   };
 
+  const getIconSrc = (iconUrl) => {
+    if (!iconUrl) return "";
+
+    // New permanent database icon format
+    if (iconUrl.startsWith("data:image")) {
+      return iconUrl;
+    }
+
+    // Old /uploads fallback
+    if (iconUrl.startsWith("/uploads")) {
+      return `${api.defaults.baseURL || ""}${iconUrl}`;
+    }
+
+    // Normal full URL or public asset
+    return iconUrl;
+  };
+
   const applyBrowserBranding = (settingsData) => {
     if (!settingsData) return;
 
     document.title = settingsData.name || "Product Sales System";
 
-    const baseURL = api.defaults.baseURL || "";
-    const iconUrl = settingsData.icon_url
-      ? `${baseURL}${settingsData.icon_url}`
-      : "/icons.svg";
+    const iconSrc = getIconSrc(settingsData.icon_url) || "/icons.svg";
 
     let favicon = document.querySelector("link[rel='icon']");
 
@@ -45,7 +59,7 @@ function Settings({ onSettingsUpdated }) {
       document.head.appendChild(favicon);
     }
 
-    favicon.href = iconUrl;
+    favicon.href = iconSrc;
   };
 
   const fetchSettings = async () => {
@@ -193,9 +207,7 @@ function Settings({ onSettingsUpdated }) {
     }
   };
 
-  const iconPreviewUrl = form.iconUrl
-    ? `${api.defaults.baseURL || ""}${form.iconUrl}`
-    : "";
+  const iconPreviewUrl = getIconSrc(form.iconUrl);
 
   if (!hasPermission("settings.manage")) {
     return (
@@ -226,7 +238,10 @@ function Settings({ onSettingsUpdated }) {
         <section className="panel settings-form-panel">
           <div className="settings-section-title">
             <h3>Store Information</h3>
-            <p>This information appears on the header, footer, receipts, and browser tab.</p>
+            <p>
+              This information appears on the header, footer, receipts, and
+              browser tab.
+            </p>
           </div>
 
           {modalError && <div className="modal-error">{modalError}</div>}
@@ -253,7 +268,11 @@ function Settings({ onSettingsUpdated }) {
                 <img src={iconPreviewUrl} alt="Store browser tab icon" />
                 <div>
                   <strong>Current browser tab icon</strong>
-                  <span>{form.iconUrl}</span>
+                  <span>
+                    {form.iconUrl.startsWith("data:image")
+                      ? "Saved permanently in database"
+                      : form.iconUrl}
+                  </span>
                 </div>
               </div>
             )}
