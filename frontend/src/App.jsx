@@ -18,12 +18,20 @@ function App() {
     return savedUser ? JSON.parse(savedUser) : null;
   });
 
-  const [activePage, setActivePage] = useState("dashboard");
+  const [activePage, setActivePageState] = useState(
+    localStorage.getItem("activePage") || "dashboard"
+  );
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [settings, setSettings] = useState(null);
+
+  const setActivePage = (page) => {
+    localStorage.setItem("activePage", page);
+    setActivePageState(page);
+  };
 
   const hasPermission = (permission) => {
     return user?.permissions?.includes(permission);
@@ -47,9 +55,11 @@ function App() {
       } catch (error) {
         localStorage.removeItem("token");
         localStorage.removeItem("user");
+        localStorage.removeItem("activePage");
 
         setToken(null);
         setUser(null);
+        setActivePageState("dashboard");
       }
     };
 
@@ -86,10 +96,12 @@ function App() {
 
       localStorage.setItem("token", loginToken);
       localStorage.setItem("user", JSON.stringify(loginUser));
+      localStorage.setItem("activePage", "dashboard");
 
       setToken(loginToken);
       setUser(loginUser);
-      setActivePage("dashboard");
+      setActivePageState("dashboard");
+
       setTimeout(() => {
         fetchSettings();
       }, 100);
@@ -101,10 +113,11 @@ function App() {
   const handleLogout = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
+    localStorage.removeItem("activePage");
 
     setToken(null);
     setUser(null);
-    setActivePage("dashboard");
+    setActivePageState("dashboard");
     setUserMenuOpen(false);
   };
 
@@ -213,14 +226,14 @@ function App() {
               </button>
             )}
 
-            {hasPermission("sales.create") && (
+            {hasPermission("sales.view") && (
               <button
                 className={`nav-link ${
-                  activePage === "new-sale" ? "active" : ""
+                  activePage === "sales" ? "active" : ""
                 }`}
-                onClick={() => setActivePage("new-sale")}
+                onClick={() => setActivePage("sales")}
               >
-                New Sale
+                Sales
               </button>
             )}
 
@@ -267,15 +280,12 @@ function App() {
         </aside>
 
         <main className="main-content">
-          <section className="page-title">
-          </section>
-
           {activePage === "dashboard" && (
             <>
               <section className="cards">
                 <div className="card">
                   <h3>Organisation</h3>
-                  <p>{user.organisationName}</p>
+                  <p>{settings?.name || user.organisationName}</p>
                 </div>
 
                 <div className="card">
@@ -310,7 +320,7 @@ function App() {
             </section>
           )}
 
-          {activePage === "new-sale" && <Sales />}
+          {activePage === "sales" && <Sales />}
 
           {activePage === "users" && <Users />}
 
@@ -336,9 +346,7 @@ function App() {
       <footer className="app-footer">
         <div>{settings?.name || user.organisationName}</div>
 
-        <div>
-          Address: {settings?.address || "Not added"}
-        </div>
+        <div>Address: {settings?.address || "Not added"}</div>
 
         <div>
           Contact us: {settings?.phone || settings?.email || "Not added"}
