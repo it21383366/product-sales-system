@@ -5,6 +5,15 @@ import SearchableSelect from "../components/SearchableSelect";
 const SALES_PER_PAGE = 25;
 
 function Sales() {
+  const savedUser = JSON.parse(localStorage.getItem("user") || "{}");
+  const permissions = savedUser.permissions || [];
+
+  const hasPermission = (permission) => permissions.includes(permission);
+
+  const defaultSaleStatus = hasPermission("sales.create")
+    ? "completed"
+    : "pending";
+
   const [sales, setSales] = useState([]);
   const [products, setProducts] = useState([]);
   const [settings, setSettings] = useState(null);
@@ -12,16 +21,29 @@ function Sales() {
   const [page, setPage] = useState(1);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [modalError, setModalError] = useState("");
 
   const [showSaleModal, setShowSaleModal] = useState(false);
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [editingSaleId, setEditingSaleId] = useState(null);
 
+  const [showCompleteModal, setShowCompleteModal] = useState(false);
+  const [selectedPendingSale, setSelectedPendingSale] = useState(null);
+  const [completeForm, setCompleteForm] = useState({
+    paymentMethod: "cash",
+    cashAmount: "",
+    cardAmount: "",
+  });
+
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+
   const [form, setForm] = useState({
+    saleStatus: defaultSaleStatus,
     paymentMethod: "cash",
     discountAmount: "",
+    taxAmount: "",
+    advanceAmount: "",
     cashAmount: "",
     cardAmount: "",
     editReason: "",
@@ -70,11 +92,17 @@ function Sales() {
   const discountAmount = Number(form.discountAmount || 0);
   const taxAmount = Number(form.taxAmount || 0);
   const totalAmount = subtotal - discountAmount + taxAmount;
+  const advanceAmount = Number(form.advanceAmount || 0);
+  const balanceAmount =
+    form.saleStatus === "pending" ? totalAmount - advanceAmount : 0;
 
   const resetForm = () => {
     setForm({
+      saleStatus: defaultSaleStatus,
       paymentMethod: "cash",
       discountAmount: "",
+      taxAmount: "",
+      advanceAmount: "",
       cashAmount: "",
       cardAmount: "",
       editReason: "",
@@ -90,7 +118,6 @@ function Sales() {
     setShowReviewModal(false);
     setMessage("");
     setError("");
-    setModalError("");
   };
 
   const openEditSale = async (saleId) => {
@@ -98,13 +125,20 @@ function Sales() {
       const response = await api.get(`/api/sales/${saleId}`);
       const sale = response.data.sale;
 
+      if (sale.status !== "completed") {
+        setError("Only completed sales can be edited");
+        return;
+      }
+
       setEditMode(true);
       setEditingSaleId(saleId);
 
       setForm({
+        saleStatus: "completed",
         paymentMethod: sale.payment_method || "cash",
-        discountAmount: sale.discount_amount || "",
-        taxAmount: sale.tax_amount || "",
+        discountAmount: Number(sale.discount_amount || 0),
+        taxAmount: Number(sale.tax_amount || 0),
+        advanceAmount: "",
         cashAmount: sale.cash_amount || "",
         cardAmount: sale.card_amount || "",
         editReason: "",
@@ -118,7 +152,6 @@ function Sales() {
       setShowReviewModal(false);
       setMessage("");
       setError("");
-      setModalError("");
     } catch (err) {
       setError(err.response?.data?.message || "Failed to load sale");
     }
@@ -129,7 +162,6 @@ function Sales() {
     setShowReviewModal(false);
     setEditMode(false);
     setEditingSaleId(null);
-    setModalError("");
     resetForm();
   };
 
@@ -158,12 +190,45 @@ function Sales() {
   };
 
   const validatePayment = () => {
-    if (form.paymentMethod === "split") {
-      const paidTotal =
-        Number(form.cashAmount || 0) + Number(form.cardAmount || 0);
+    if (totalAmount <= 0) {
+      return "Sale total must be greater than 0";
+    }
 
-      if (Number(paidTotal.toFixed(2)) !== Number(totalAmount.toFixed(2))) {
-        return "Cash amount + card amount must match the total amount";
+    if (form.saleStatus === "pending") {
+      if (!hasPermission("sales.pending.create")) {
+        return "You do not have permission to create pending sales";
+      }
+
+      if (advanceAmount <= 0) {
+        return "Advance amount must be greater than 0";
+      }
+
+      if (advanceAmount >= totalAmount) {
+        return "Advance amount must be less than the total amount";
+      }
+
+      if (form.paymentMethod === "split") {
+        const paidTotal =
+          Number(form.cashAmount || 0) + Number(form.cardAmount || 0);
+
+        if (Number(paidTotal.toFixed(2)) !== Number(advanceAmount.toFixed(2))) {
+          return "Cash amount + card amount must match the advance amount";
+        }
+      }
+    }
+
+    if (form.saleStatus === "completed") {
+      if (!hasPermission("sales.create")) {
+        return "You do not have permission to create completed sales";
+      }
+
+      if (form.paymentMethod === "split") {
+        const paidTotal =
+          Number(form.cashAmount || 0) + Number(form.cardAmount || 0);
+
+        if (Number(paidTotal.toFixed(2)) !== Number(totalAmount.toFixed(2))) {
+          return "Cash amount + card amount must match the total amount";
+        }
       }
     }
 
@@ -172,10 +237,10 @@ function Sales() {
 
   const handleReview = (e) => {
     e.preventDefault();
-    setModalError("");
+    setError("");
 
     if (editMode && !form.editReason.trim()) {
-      setModalError("Edit reason is required");
+      setError("Edit reason is required");
       return;
     }
 
@@ -184,14 +249,14 @@ function Sales() {
     );
 
     if (invalidItem) {
-      setModalError("Please select products and valid quantities");
+      setError("Please select products and valid quantities");
       return;
     }
 
     const paymentError = validatePayment();
 
     if (paymentError) {
-      setModalError(paymentError);
+      setError(paymentError);
       return;
     }
 
@@ -200,14 +265,15 @@ function Sales() {
 
   const submitSale = async () => {
     try {
-      setModalError("");
       setError("");
       setMessage("");
 
       const payload = {
+        saleStatus: form.saleStatus,
         paymentMethod: form.paymentMethod,
         discountAmount: Number(form.discountAmount || 0),
         taxAmount: Number(form.taxAmount || 0),
+        advanceAmount: Number(form.advanceAmount || 0),
         cashAmount: Number(form.cashAmount || 0),
         cardAmount: Number(form.cardAmount || 0),
         editReason: form.editReason,
@@ -224,7 +290,11 @@ function Sales() {
         setMessage("Sale edited successfully");
       } else {
         response = await api.post("/api/sales", payload);
-        setMessage("Sale completed successfully");
+        setMessage(
+          form.saleStatus === "pending"
+            ? "Pending sale created successfully"
+            : "Sale completed successfully"
+        );
       }
 
       closeModals();
@@ -234,7 +304,7 @@ function Sales() {
       printSaleSlip(response.data.sale);
     } catch (err) {
       setShowReviewModal(false);
-      setModalError(err.response?.data?.message || "Failed to save sale");
+      setError(err.response?.data?.message || "Failed to save sale");
     }
   };
 
@@ -247,6 +317,121 @@ function Sales() {
     }
   };
 
+  const openCompletePending = (sale) => {
+    setSelectedPendingSale(sale);
+    setCompleteForm({
+      paymentMethod: "cash",
+      cashAmount: "",
+      cardAmount: "",
+    });
+    setShowCompleteModal(true);
+    setError("");
+    setMessage("");
+  };
+
+  const closeCompletePending = () => {
+    setSelectedPendingSale(null);
+    setCompleteForm({
+      paymentMethod: "cash",
+      cashAmount: "",
+      cardAmount: "",
+    });
+    setShowCompleteModal(false);
+  };
+
+  const submitCompletePending = async () => {
+    try {
+      if (!selectedPendingSale) return;
+
+      const balance = Number(selectedPendingSale.balance_amount || 0);
+
+      if (completeForm.paymentMethod === "split") {
+        const paidTotal =
+          Number(completeForm.cashAmount || 0) +
+          Number(completeForm.cardAmount || 0);
+
+        if (Number(paidTotal.toFixed(2)) !== Number(balance.toFixed(2))) {
+          setError("Cash amount + card amount must match the balance amount");
+          return;
+        }
+      }
+
+      await api.patch(`/api/sales/${selectedPendingSale.id}/complete-pending`, {
+        paymentMethod: completeForm.paymentMethod,
+        cashAmount: Number(completeForm.cashAmount || 0),
+        cardAmount: Number(completeForm.cardAmount || 0),
+      });
+
+      const saleId = selectedPendingSale.id;
+
+      closeCompletePending();
+      setMessage("Pending sale completed successfully");
+
+      await fetchSales();
+      await fetchProducts();
+      await printExistingSale(saleId);
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to complete pending sale");
+    }
+  };
+
+  const openCancelPending = (sale) => {
+    setSelectedPendingSale(sale);
+    setCancelReason("");
+    setShowCancelModal(true);
+    setError("");
+    setMessage("");
+  };
+
+  const closeCancelPending = () => {
+    setSelectedPendingSale(null);
+    setCancelReason("");
+    setShowCancelModal(false);
+  };
+
+  const submitCancelPending = async () => {
+    try {
+      if (!selectedPendingSale) return;
+
+      if (!cancelReason.trim()) {
+        setError("Cancel reason is required");
+        return;
+      }
+
+      await api.patch(`/api/sales/${selectedPendingSale.id}/cancel-pending`, {
+        reason: cancelReason,
+      });
+
+      closeCancelPending();
+      setMessage("Pending sale cancelled and stock returned");
+
+      await fetchSales();
+      await fetchProducts();
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to cancel pending sale");
+    }
+  };
+
+  const getStatusBadge = (sale) => {
+    if (sale.status === "pending") {
+      return <span className="badge warning">Pending</span>;
+    }
+
+    if (sale.status === "cancelled") {
+      return <span className="badge danger">Cancelled</span>;
+    }
+
+    if (sale.status === "refunded") {
+      return <span className="badge danger">Refunded</span>;
+    }
+
+    if (sale.is_edited) {
+      return <span className="badge warning">Edited</span>;
+    }
+
+    return <span className="badge success">Completed</span>;
+  };
+
   const printSaleSlip = (sale) => {
     const printWindow = window.open("", "_blank", "width=320,height=700");
 
@@ -254,7 +439,7 @@ function Sales() {
     const address = settings?.address || "";
     const contact = settings?.phone || settings?.email || "";
 
-    const rows = sale.items
+    const rows = (sale.items || [])
       .map(
         (item) => `
         <tr>
@@ -265,6 +450,15 @@ function Sales() {
       `
       )
       .join("");
+
+    const statusText =
+      sale.status === "pending"
+        ? "PENDING SALE / STOCK RESERVED"
+        : sale.status === "cancelled"
+        ? "CANCELLED SALE"
+        : sale.status === "refunded"
+        ? "REFUNDED SALE"
+        : "COMPLETED SALE";
 
     printWindow.document.write(`
       <html>
@@ -331,6 +525,12 @@ function Sales() {
             .small {
               font-size: 10px;
             }
+
+            .status {
+              font-weight: bold;
+              text-align: center;
+              margin-top: 6px;
+            }
           </style>
         </head>
         <body>
@@ -344,6 +544,7 @@ function Sales() {
 
           <p>Sale: ${sale.sale_number}</p>
           <p>Date: ${new Date(sale.created_at || new Date()).toLocaleString()}</p>
+          <p class="status">${statusText}</p>
           ${sale.is_edited ? "<p><strong>Edited Sale</strong></p>" : ""}
 
           <div class="line"></div>
@@ -356,24 +557,35 @@ function Sales() {
 
           <div class="line"></div>
 
-          <p>Subtotal: $${Number(sale.subtotal).toFixed(2)}</p>
-          <p>Discount: $${Number(sale.discount_amount).toFixed(2)}</p>
-          <p>Tax: $${Number(sale.tax_amount).toFixed(2)}</p>
-          <p class="total">Total: $${Number(sale.total_amount).toFixed(2)}</p>
+          <p>Subtotal: $${Number(sale.subtotal || 0).toFixed(2)}</p>
+          <p>Discount: $${Number(sale.discount_amount || 0).toFixed(2)}</p>
+          <p>Tax: $${Number(sale.tax_amount || 0).toFixed(2)}</p>
+          <p class="total">Total: $${Number(sale.total_amount || 0).toFixed(2)}</p>
 
-          <div class="line"></div>
-
-          <p>Payment: ${sale.payment_method}</p>
           ${
-            sale.payment_method === "split"
-              ? `<p>Cash: $${Number(sale.cash_amount || 0).toFixed(2)}</p>
-                 <p>Card: $${Number(sale.card_amount || 0).toFixed(2)}</p>`
+            sale.status === "pending"
+              ? `
+                <p>Advance Paid: $${Number(sale.advance_amount || 0).toFixed(2)}</p>
+                <p>Balance Due: $${Number(sale.balance_amount || 0).toFixed(2)}</p>
+              `
               : ""
           }
 
           <div class="line"></div>
 
-          <p class="center">Thank you for your purchase!</p>
+          <p>Payment: ${sale.payment_method || "-"}</p>
+          <p>Cash: $${Number(sale.cash_amount || 0).toFixed(2)}</p>
+          <p>Card: $${Number(sale.card_amount || 0).toFixed(2)}</p>
+
+          <div class="line"></div>
+
+          <p class="center">
+            ${
+              sale.status === "pending"
+                ? "Thank you. Your items have been reserved."
+                : "Thank you for your purchase!"
+            }
+          </p>
           <p class="center small">Please come again</p>
 
           <script>
@@ -391,7 +603,7 @@ function Sales() {
       <div className="page-header">
         <div>
           <h2>Sales</h2>
-          <p>View sales history and create new POS sales.</p>
+          <p>View sales history, pending reservations, and POS sales.</p>
         </div>
       </div>
 
@@ -407,9 +619,12 @@ function Sales() {
             </p>
           </div>
 
-          <button className="primary-btn add-product-btn" onClick={openNewSale}>
-            + New Sale
-          </button>
+          {(hasPermission("sales.create") ||
+            hasPermission("sales.pending.create")) && (
+            <button className="primary-btn add-product-btn" onClick={openNewSale}>
+              + New Sale
+            </button>
+          )}
         </div>
 
         <div className="table-wrapper">
@@ -418,6 +633,8 @@ function Sales() {
               <tr>
                 <th>Sale No</th>
                 <th>Total</th>
+                <th>Advance</th>
+                <th>Balance</th>
                 <th>Payment</th>
                 <th>Status</th>
                 <th>Sold By</th>
@@ -429,32 +646,50 @@ function Sales() {
             <tbody>
               {paginatedSales.length === 0 && (
                 <tr>
-                  <td colSpan="7">No sales found</td>
+                  <td colSpan="9">No sales found</td>
                 </tr>
               )}
 
               {paginatedSales.map((sale) => (
                 <tr key={sale.id}>
                   <td>{sale.sale_number}</td>
-                  <td>${Number(sale.total_amount).toFixed(2)}</td>
-                  <td>{sale.payment_method}</td>
-                  <td>
-                    {sale.is_edited ? (
-                      <span className="badge warning">Edited</span>
-                    ) : (
-                      <span className="badge success">{sale.status}</span>
-                    )}
-                  </td>
+                  <td>${Number(sale.total_amount || 0).toFixed(2)}</td>
+                  <td>${Number(sale.advance_amount || 0).toFixed(2)}</td>
+                  <td>${Number(sale.balance_amount || 0).toFixed(2)}</td>
+                  <td>{sale.payment_method || "-"}</td>
+                  <td>{getStatusBadge(sale)}</td>
                   <td>{sale.sold_by || "-"}</td>
                   <td>{new Date(sale.created_at).toLocaleString()}</td>
                   <td>
                     <div className="table-actions">
-                      <button
-                        className="small-btn"
-                        onClick={() => openEditSale(sale.id)}
-                      >
-                        Edit
-                      </button>
+                      {sale.status === "pending" &&
+                        hasPermission("sales.pending.complete") && (
+                          <button
+                            className="small-btn"
+                            onClick={() => openCompletePending(sale)}
+                          >
+                            Complete Sale
+                          </button>
+                        )}
+
+                      {sale.status === "pending" &&
+                        hasPermission("sales.pending.cancel") && (
+                          <button
+                            className="small-btn danger-table-btn"
+                            onClick={() => openCancelPending(sale)}
+                          >
+                            Cancel Pending
+                          </button>
+                        )}
+
+                      {sale.status === "completed" && hasPermission("sales.create") && (
+                        <button
+                          className="small-btn"
+                          onClick={() => openEditSale(sale.id)}
+                        >
+                          Edit
+                        </button>
+                      )}
 
                       <button
                         className="small-btn secondary-table-btn"
@@ -479,7 +714,9 @@ function Sales() {
             Previous
           </button>
 
-          <span>Showing page {page} of {totalPages}</span>
+          <span>
+            Showing page {page} of {totalPages}
+          </span>
 
           <button
             className="secondary-btn"
@@ -493,13 +730,11 @@ function Sales() {
 
       {showSaleModal && (
         <div className="modal-overlay">
-          <div
-            className={`product-modal ${showReviewModal ? "modal-blurred" : ""}`}
-          >
+          <div className={`product-modal ${showReviewModal ? "modal-blurred" : ""}`}>
             <div className="modal-header">
               <div>
                 <h3>{editMode ? "Edit Sale" : "New Sale"}</h3>
-                <p>Select products, payment method, and continue.</p>
+                <p>Select products, sale type, payment method, and continue.</p>
               </div>
 
               <button className="modal-close-btn" onClick={closeModals}>
@@ -507,16 +742,40 @@ function Sales() {
               </button>
             </div>
 
-            {modalError && <div className="modal-error">{modalError}</div>}
-
             <form className="product-form" onSubmit={handleReview}>
+              {!editMode && (
+                <div>
+                  <label>Sale Type</label>
+                  <select
+                    value={form.saleStatus}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        saleStatus: e.target.value,
+                        advanceAmount: "",
+                        cashAmount: "",
+                        cardAmount: "",
+                        paymentMethod: "cash",
+                      })
+                    }
+                  >
+                    {hasPermission("sales.create") && (
+                      <option value="completed">Completed Sale</option>
+                    )}
+
+                    {hasPermission("sales.pending.create") && (
+                      <option value="pending">Pending Sale / Reserve Stock</option>
+                    )}
+                  </select>
+                </div>
+              )}
+
               {form.items.map((item, index) => {
                 const product = getProduct(item.productId);
 
                 return (
                   <div className="sale-item-row" key={index}>
                     <div>
-                      <label>Product</label>
                       <SearchableSelect
                         label="Product"
                         value={item.productId}
@@ -576,45 +835,67 @@ function Sales() {
 
               <div className="form-row">
                 <div>
-                    <label>Discount</label>
-                    <input
+                  <label>Discount</label>
+                  <input
                     type="number"
                     value={form.discountAmount}
                     placeholder="0.00"
                     onChange={(e) =>
-                        setForm({ ...form, discountAmount: e.target.value })
+                      setForm({ ...form, discountAmount: e.target.value })
                     }
-                    />
+                  />
                 </div>
 
                 <div>
-                    <label>Tax</label>
-                    <input
+                  <label>Tax</label>
+                  <input
                     type="number"
                     value={form.taxAmount}
                     placeholder="0.00"
                     onChange={(e) =>
-                        setForm({ ...form, taxAmount: e.target.value })
+                      setForm({ ...form, taxAmount: e.target.value })
                     }
-                    />
+                  />
                 </div>
-            </div>
+              </div>
 
-            <div className="form-row">
+              {form.saleStatus === "pending" && !editMode && (
                 <div>
-                    <label>Payment Method</label>
-                    <select
-                    value={form.paymentMethod}
+                  <label>Advance Amount *</label>
+                  <input
+                    type="number"
+                    value={form.advanceAmount}
+                    placeholder="0.00"
                     onChange={(e) =>
-                        setForm({ ...form, paymentMethod: e.target.value })
+                      setForm({ ...form, advanceAmount: e.target.value })
                     }
-                    >
-                    <option value="cash">Cash</option>
-                    <option value="card">Card</option>
-                    <option value="split">Split</option>
-                    </select>
+                    required
+                  />
                 </div>
-            </div>
+              )}
+
+              <div>
+                <label>
+                  {form.saleStatus === "pending" && !editMode
+                    ? "Advance Payment Method"
+                    : "Payment Method"}
+                </label>
+                <select
+                  value={form.paymentMethod}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      paymentMethod: e.target.value,
+                      cashAmount: "",
+                      cardAmount: "",
+                    })
+                  }
+                >
+                  <option value="cash">Cash</option>
+                  <option value="card">Card</option>
+                  <option value="split">Split</option>
+                </select>
+              </div>
 
               {form.paymentMethod === "split" && (
                 <div className="form-row">
@@ -623,6 +904,7 @@ function Sales() {
                     <input
                       type="number"
                       value={form.cashAmount}
+                      placeholder="0.00"
                       onChange={(e) =>
                         setForm({ ...form, cashAmount: e.target.value })
                       }
@@ -634,6 +916,7 @@ function Sales() {
                     <input
                       type="number"
                       value={form.cardAmount}
+                      placeholder="0.00"
                       onChange={(e) =>
                         setForm({ ...form, cardAmount: e.target.value })
                       }
@@ -676,6 +959,20 @@ function Sales() {
                   <span>Total</span>
                   <strong>${totalAmount.toFixed(2)}</strong>
                 </div>
+
+                {form.saleStatus === "pending" && !editMode && (
+                  <>
+                    <div>
+                      <span>Advance</span>
+                      <strong>${advanceAmount.toFixed(2)}</strong>
+                    </div>
+
+                    <div>
+                      <span>Balance</span>
+                      <strong>${Math.max(balanceAmount, 0).toFixed(2)}</strong>
+                    </div>
+                  </>
+                )}
               </div>
 
               <div className="modal-actions">
@@ -691,108 +988,258 @@ function Sales() {
           </div>
 
           {showReviewModal && (
-            <div className="review-modal sale-review-modal">
-                <h3>{editMode ? "Confirm Sale Edit" : "Confirm Sale"}</h3>
-                <p>Please verify the sale before saving.</p>
+            <div className="review-modal">
+              <h3>{editMode ? "Confirm Sale Edit" : "Confirm Sale"}</h3>
+              <p>Please verify the sale before saving.</p>
 
-                <div className="sale-review-items">
-                <h4>Sale Products</h4>
+              <div className="review-grid">
+                <div>
+                  <span>Sale Type</span>
+                  <strong>
+                    {editMode
+                      ? "Completed Sale Edit"
+                      : form.saleStatus === "pending"
+                      ? "Pending Sale"
+                      : "Completed Sale"}
+                  </strong>
+                </div>
 
-                {form.items.map((item, index) => {
-                    const product = getProduct(item.productId);
-                    const quantity = Number(item.quantity || 0);
-                    const unitPrice = Number(product?.selling_price || 0);
-                    const lineTotal = unitPrice * quantity;
+                <div>
+                  <span>Items</span>
+                  <strong>{form.items.length}</strong>
+                </div>
 
-                    return (
-                    <div className="sale-review-item" key={index}>
-                        <div>
-                        <strong>{product?.name || "Unknown Product"}</strong>
-                        <span>Qty: {quantity}</span>
-                        </div>
+                <div>
+                  <span>Payment</span>
+                  <strong>{form.paymentMethod}</strong>
+                </div>
 
-                        <div>
-                        <span>Unit</span>
-                        <strong>${unitPrice.toFixed(2)}</strong>
-                        </div>
+                <div>
+                  <span>Subtotal</span>
+                  <strong>${subtotal.toFixed(2)}</strong>
+                </div>
 
-                        <div>
-                        <span>Total</span>
-                        <strong>${lineTotal.toFixed(2)}</strong>
-                        </div>
+                <div>
+                  <span>Tax</span>
+                  <strong>${taxAmount.toFixed(2)}</strong>
+                </div>
+
+                <div>
+                  <span>Discount</span>
+                  <strong>${discountAmount.toFixed(2)}</strong>
+                </div>
+
+                <div>
+                  <span>Total</span>
+                  <strong>${totalAmount.toFixed(2)}</strong>
+                </div>
+
+                {form.saleStatus === "pending" && !editMode && (
+                  <>
+                    <div>
+                      <span>Advance</span>
+                      <strong>${advanceAmount.toFixed(2)}</strong>
                     </div>
-                    );
-                })}
-                </div>
 
-                <div className="review-grid">
-                <div>
-                    <span>Items</span>
-                    <strong>{form.items.length}</strong>
-                </div>
-
-                <div>
-                    <span>Payment</span>
-                    <strong>{form.paymentMethod}</strong>
-                </div>
-
-                <div>
-                    <span>Subtotal</span>
-                    <strong>${subtotal.toFixed(2)}</strong>
-                </div>
-
-                <div>
-                    <span>Tax</span>
-                    <strong>${taxAmount.toFixed(2)}</strong>
-                </div>
-
-                <div>
-                    <span>Discount</span>
-                    <strong>${discountAmount.toFixed(2)}</strong>
-                </div>
-
-                <div>
-                    <span>Total</span>
-                    <strong>${totalAmount.toFixed(2)}</strong>
-                </div>
+                    <div>
+                      <span>Balance</span>
+                      <strong>${Math.max(balanceAmount, 0).toFixed(2)}</strong>
+                    </div>
+                  </>
+                )}
 
                 {form.paymentMethod === "split" && (
-                    <>
+                  <>
                     <div>
-                        <span>Cash</span>
-                        <strong>${Number(form.cashAmount || 0).toFixed(2)}</strong>
+                      <span>Cash</span>
+                      <strong>${Number(form.cashAmount || 0).toFixed(2)}</strong>
                     </div>
 
                     <div>
-                        <span>Card</span>
-                        <strong>${Number(form.cardAmount || 0).toFixed(2)}</strong>
+                      <span>Card</span>
+                      <strong>${Number(form.cardAmount || 0).toFixed(2)}</strong>
                     </div>
-                    </>
+                  </>
                 )}
 
                 {editMode && (
-                    <div className="review-full">
+                  <div className="review-full">
                     <span>Edit Reason</span>
                     <strong>{form.editReason}</strong>
-                    </div>
+                  </div>
                 )}
-                </div>
+              </div>
 
-                <div className="modal-actions">
+              <div className="modal-actions">
                 <button
-                    type="button"
-                    className="secondary-btn"
-                    onClick={() => setShowReviewModal(false)}
+                  type="button"
+                  className="secondary-btn"
+                  onClick={() => setShowReviewModal(false)}
                 >
-                    Edit
+                  Edit
                 </button>
 
                 <button type="button" className="primary-btn" onClick={submitSale}>
-                    Confirm & Save
+                  Confirm & Save
                 </button>
-                </div>
+              </div>
             </div>
-            )}
+          )}
+        </div>
+      )}
+
+      {showCompleteModal && selectedPendingSale && (
+        <div className="modal-overlay">
+          <div className="confirm-modal">
+            <div className="modal-header">
+              <div>
+                <h3>Complete Pending Sale</h3>
+                <p>{selectedPendingSale.sale_number}</p>
+              </div>
+
+              <button className="modal-close-btn" onClick={closeCompletePending}>
+                ×
+              </button>
+            </div>
+
+            <div className="sale-total-box">
+              <div>
+                <span>Total</span>
+                <strong>
+                  ${Number(selectedPendingSale.total_amount || 0).toFixed(2)}
+                </strong>
+              </div>
+
+              <div>
+                <span>Advance Paid</span>
+                <strong>
+                  ${Number(selectedPendingSale.advance_amount || 0).toFixed(2)}
+                </strong>
+              </div>
+
+              <div>
+                <span>Balance Due</span>
+                <strong>
+                  ${Number(selectedPendingSale.balance_amount || 0).toFixed(2)}
+                </strong>
+              </div>
+            </div>
+
+            <div className="product-form">
+              <label>Balance Payment Method</label>
+              <select
+                value={completeForm.paymentMethod}
+                onChange={(e) =>
+                  setCompleteForm({
+                    paymentMethod: e.target.value,
+                    cashAmount: "",
+                    cardAmount: "",
+                  })
+                }
+              >
+                <option value="cash">Cash</option>
+                <option value="card">Card</option>
+                <option value="split">Split</option>
+              </select>
+
+              {completeForm.paymentMethod === "split" && (
+                <div className="form-row">
+                  <div>
+                    <label>Cash Amount</label>
+                    <input
+                      type="number"
+                      value={completeForm.cashAmount}
+                      placeholder="0.00"
+                      onChange={(e) =>
+                        setCompleteForm({
+                          ...completeForm,
+                          cashAmount: e.target.value,
+                        })
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label>Card Amount</label>
+                    <input
+                      type="number"
+                      value={completeForm.cardAmount}
+                      placeholder="0.00"
+                      onChange={(e) =>
+                        setCompleteForm({
+                          ...completeForm,
+                          cardAmount: e.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={closeCompletePending}
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                className="primary-btn"
+                onClick={submitCompletePending}
+              >
+                Complete Sale
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCancelModal && selectedPendingSale && (
+        <div className="modal-overlay">
+          <div className="confirm-modal">
+            <div className="modal-header">
+              <div>
+                <h3>Cancel Pending Sale</h3>
+                <p>{selectedPendingSale.sale_number}</p>
+              </div>
+
+              <button className="modal-close-btn" onClick={closeCancelPending}>
+                ×
+              </button>
+            </div>
+
+            <div className="product-form">
+              <label>Cancel Reason *</label>
+              <textarea
+                value={cancelReason}
+                placeholder="Reason for cancelling this pending sale"
+                onChange={(e) => setCancelReason(e.target.value)}
+                required
+              />
+            </div>
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={closeCancelPending}
+              >
+                Close
+              </button>
+
+              <button
+                type="button"
+                className="primary-btn danger-confirm-btn"
+                onClick={submitCancelPending}
+              >
+                Cancel Pending Sale
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
