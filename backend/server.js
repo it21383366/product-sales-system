@@ -5691,18 +5691,37 @@ app.get(
           products.id,
           products.name,
           products.sku,
-          products.stock_quantity,
           products.low_stock_alert,
-          products.selling_price,
+          categories.name AS category_name,
           suppliers.name AS supplier_name,
-          categories.name AS category_name
+
+          COALESCE(batch_summary.total_stock, 0) AS stock_quantity,
+          COALESCE(batch_summary.batch_count, 0) AS batch_count,
+          COALESCE(batch_summary.lowest_selling_price, products.selling_price, 0) AS lowest_selling_price,
+          COALESCE(batch_summary.highest_selling_price, products.selling_price, 0) AS highest_selling_price
+
         FROM products
-        LEFT JOIN suppliers ON products.supplier_id = suppliers.id
         LEFT JOIN categories ON products.category_id = categories.id
+        LEFT JOIN suppliers ON products.supplier_id = suppliers.id
+        LEFT JOIN (
+          SELECT
+            product_id,
+            organisation_id,
+            COUNT(*) AS batch_count,
+            COALESCE(SUM(quantity), 0) AS total_stock,
+            MIN(selling_price) AS lowest_selling_price,
+            MAX(selling_price) AS highest_selling_price
+          FROM product_stock_batches
+          WHERE is_active = true
+          GROUP BY product_id, organisation_id
+        ) AS batch_summary
+          ON products.id = batch_summary.product_id
+          AND products.organisation_id = batch_summary.organisation_id
+
         WHERE products.organisation_id = $1
         AND products.is_active = true
-        AND products.stock_quantity <= products.low_stock_alert
-        ORDER BY products.stock_quantity ASC
+        AND COALESCE(batch_summary.total_stock, 0) <= products.low_stock_alert
+        ORDER BY COALESCE(batch_summary.total_stock, 0) ASC
         `,
         [req.user.organisation_id]
       );
@@ -5913,32 +5932,61 @@ app.get(
           products.name,
           products.sku,
           products.barcode,
-          products.buying_price,
-          products.selling_price,
-          products.stock_quantity,
           products.low_stock_alert,
           products.is_active,
           products.created_at,
           categories.name AS category_name,
           suppliers.name AS supplier_name,
-          COALESCE(SUM(
-            CASE 
-              WHEN sales.status = 'completed' THEN sale_items.quantity 
-              ELSE 0 
-            END
-          ), 0) AS quantity_sold,
-          COALESCE(SUM(
-            CASE 
-              WHEN sales.status = 'completed' THEN sale_items.total_price 
-              ELSE 0 
-            END
-          ), 0) AS sales_value
+
+          COALESCE(batch_summary.total_stock, 0) AS stock_quantity,
+          COALESCE(batch_summary.batch_count, 0) AS batch_count,
+          COALESCE(batch_summary.lowest_selling_price, products.selling_price, 0) AS lowest_selling_price,
+          COALESCE(batch_summary.highest_selling_price, products.selling_price, 0) AS highest_selling_price,
+          COALESCE(batch_summary.average_buying_price, products.buying_price, 0) AS average_buying_price,
+          COALESCE(batch_summary.stock_value_at_selling_price, 0) AS stock_value_at_selling_price,
+          COALESCE(batch_summary.stock_cost_value, 0) AS stock_cost_value,
+
+          COALESCE(sales_summary.quantity_sold, 0) AS quantity_sold,
+          COALESCE(sales_summary.sales_value, 0) AS sales_value
+
         FROM products
         LEFT JOIN categories ON products.category_id = categories.id
         LEFT JOIN suppliers ON products.supplier_id = suppliers.id
-        LEFT JOIN sale_items ON products.id = sale_items.product_id
-        LEFT JOIN sales ON sale_items.sale_id = sales.id
+
+        LEFT JOIN (
+          SELECT
+            product_id,
+            organisation_id,
+            COUNT(*) AS batch_count,
+            COALESCE(SUM(quantity), 0) AS total_stock,
+            MIN(selling_price) AS lowest_selling_price,
+            MAX(selling_price) AS highest_selling_price,
+            AVG(buying_price) AS average_buying_price,
+            COALESCE(SUM(quantity * selling_price), 0) AS stock_value_at_selling_price,
+            COALESCE(SUM(quantity * buying_price), 0) AS stock_cost_value
+          FROM product_stock_batches
+          WHERE is_active = true
+          GROUP BY product_id, organisation_id
+        ) AS batch_summary
+          ON products.id = batch_summary.product_id
+          AND products.organisation_id = batch_summary.organisation_id
+
+        LEFT JOIN (
+          SELECT
+            sale_items.product_id,
+            sales.organisation_id,
+            COALESCE(SUM(sale_items.quantity), 0) AS quantity_sold,
+            COALESCE(SUM(sale_items.total_price), 0) AS sales_value
+          FROM sale_items
+          INNER JOIN sales ON sale_items.sale_id = sales.id
+          WHERE sales.status = 'completed'
+          GROUP BY sale_items.product_id, sales.organisation_id
+        ) AS sales_summary
+          ON products.id = sales_summary.product_id
+          AND products.organisation_id = sales_summary.organisation_id
+
         WHERE products.organisation_id = $1
+        AND products.is_active = true
       `;
 
       const values = [req.user.organisation_id];
@@ -5969,25 +6017,12 @@ app.get(
       }
 
       if (lowStock === "true") {
-        query += ` AND products.stock_quantity <= products.low_stock_alert`;
+        query += `
+          AND COALESCE(batch_summary.total_stock, 0) <= products.low_stock_alert
+        `;
       }
 
-      query += `
-        GROUP BY
-          products.id,
-          products.name,
-          products.sku,
-          products.barcode,
-          products.buying_price,
-          products.selling_price,
-          products.stock_quantity,
-          products.low_stock_alert,
-          products.is_active,
-          products.created_at,
-          categories.name,
-          suppliers.name
-        ORDER BY products.name ASC
-      `;
+      query += ` ORDER BY products.name ASC`;
 
       const result = await pool.query(query, values);
 
@@ -5995,6 +6030,7 @@ app.get(
         (totals, product) => {
           totals.productCount += 1;
           totals.totalStock += Number(product.stock_quantity || 0);
+          totals.batchCount += Number(product.batch_count || 0);
           totals.lowStockCount +=
             Number(product.stock_quantity || 0) <=
             Number(product.low_stock_alert || 0)
@@ -6002,14 +6038,20 @@ app.get(
               : 0;
           totals.quantitySold += Number(product.quantity_sold || 0);
           totals.salesValue += Number(product.sales_value || 0);
+          totals.stockValue += Number(product.stock_value_at_selling_price || 0);
+          totals.stockCostValue += Number(product.stock_cost_value || 0);
+
           return totals;
         },
         {
           productCount: 0,
           totalStock: 0,
+          batchCount: 0,
           lowStockCount: 0,
           quantitySold: 0,
           salesValue: 0,
+          stockValue: 0,
+          stockCostValue: 0,
         }
       );
 
@@ -6024,6 +6066,136 @@ app.get(
       res.status(500).json({
         status: "error",
         message: "Failed to generate product report",
+        error: error.message,
+      });
+    }
+  }
+);
+
+app.get(
+  "/api/reports/stock-batches",
+  authMiddleware,
+  requirePermission("reports.stock.view"),
+  async (req, res) => {
+    try {
+      const { search, categoryId, supplierId, lowStock } = req.query;
+
+      let query = `
+        SELECT
+          product_stock_batches.id AS batch_id,
+          product_stock_batches.product_id,
+          product_stock_batches.buying_price,
+          product_stock_batches.selling_price,
+          product_stock_batches.quantity,
+          product_stock_batches.original_quantity,
+          product_stock_batches.batch_note,
+          product_stock_batches.created_at,
+
+          products.name AS product_name,
+          products.sku,
+          products.barcode,
+          products.low_stock_alert,
+
+          categories.name AS category_name,
+          suppliers.name AS supplier_name,
+
+          (product_stock_batches.quantity * product_stock_batches.selling_price) AS selling_stock_value,
+          (product_stock_batches.quantity * product_stock_batches.buying_price) AS buying_stock_value,
+          ((product_stock_batches.selling_price - product_stock_batches.buying_price) * product_stock_batches.quantity) AS potential_profit_value
+
+        FROM product_stock_batches
+        INNER JOIN products ON product_stock_batches.product_id = products.id
+        LEFT JOIN categories ON products.category_id = categories.id
+        LEFT JOIN suppliers ON product_stock_batches.supplier_id = suppliers.id
+
+        WHERE product_stock_batches.organisation_id = $1
+        AND product_stock_batches.is_active = true
+        AND products.is_active = true
+      `;
+
+      const values = [req.user.organisation_id];
+      let count = 2;
+
+      if (search) {
+        query += `
+          AND (
+            products.name ILIKE $${count}
+            OR products.sku ILIKE $${count}
+            OR products.barcode ILIKE $${count}
+            OR product_stock_batches.batch_note ILIKE $${count}
+          )
+        `;
+        values.push(`%${search}%`);
+        count++;
+      }
+
+      if (categoryId) {
+        query += ` AND products.category_id = $${count}`;
+        values.push(categoryId);
+        count++;
+      }
+
+      if (supplierId) {
+        query += ` AND product_stock_batches.supplier_id = $${count}`;
+        values.push(supplierId);
+        count++;
+      }
+
+      if (lowStock === "true") {
+        query += `
+          AND product_stock_batches.quantity <= products.low_stock_alert
+        `;
+      }
+
+      query += `
+        ORDER BY products.name ASC,
+                 product_stock_batches.selling_price DESC,
+                 product_stock_batches.created_at DESC
+      `;
+
+      const result = await pool.query(query, values);
+
+      const summary = result.rows.reduce(
+        (totals, batch) => {
+          totals.batchCount += 1;
+          totals.totalCurrentStock += Number(batch.quantity || 0);
+          totals.totalOriginalStock += Number(batch.original_quantity || 0);
+          totals.sellingStockValue += Number(batch.selling_stock_value || 0);
+          totals.buyingStockValue += Number(batch.buying_stock_value || 0);
+          totals.potentialProfitValue += Number(
+            batch.potential_profit_value || 0
+          );
+
+          if (
+            Number(batch.quantity || 0) <= Number(batch.low_stock_alert || 0)
+          ) {
+            totals.lowStockBatchCount += 1;
+          }
+
+          return totals;
+        },
+        {
+          batchCount: 0,
+          totalCurrentStock: 0,
+          totalOriginalStock: 0,
+          lowStockBatchCount: 0,
+          sellingStockValue: 0,
+          buyingStockValue: 0,
+          potentialProfitValue: 0,
+        }
+      );
+
+      res.json({
+        status: "success",
+        summary,
+        batches: result.rows,
+      });
+    } catch (error) {
+      console.error("Stock batch report error:", error.message);
+
+      res.status(500).json({
+        status: "error",
+        message: "Failed to generate stock batch report",
         error: error.message,
       });
     }
@@ -6328,18 +6500,27 @@ app.get(
           products.sku,
           categories.name AS category_name,
           suppliers.name AS supplier_name,
-          products.buying_price,
-          products.selling_price,
+
           COALESCE(SUM(sale_items.quantity), 0) AS quantity_sold,
           COALESCE(SUM(sale_items.total_price), 0) AS sales_value,
-          COALESCE(SUM(sale_items.quantity * products.buying_price), 0) AS buying_cost,
-          COALESCE(SUM(sale_items.total_price - (sale_items.quantity * products.buying_price)), 0) AS gross_profit
-        FROM products
+          COALESCE(SUM(sale_items.quantity * product_stock_batches.buying_price), 0) AS buying_cost,
+          COALESCE(
+            SUM(
+              sale_items.total_price -
+              (sale_items.quantity * product_stock_batches.buying_price)
+            ),
+            0
+          ) AS gross_profit
+
+        FROM sale_items
+        INNER JOIN sales ON sale_items.sale_id = sales.id
+        INNER JOIN products ON sale_items.product_id = products.id
+        LEFT JOIN product_stock_batches
+          ON sale_items.stock_batch_id = product_stock_batches.id
         LEFT JOIN categories ON products.category_id = categories.id
-        LEFT JOIN suppliers ON products.supplier_id = suppliers.id
-        LEFT JOIN sale_items ON products.id = sale_items.product_id
-        LEFT JOIN sales ON sale_items.sale_id = sales.id
-        WHERE products.organisation_id = $1
+        LEFT JOIN suppliers ON product_stock_batches.supplier_id = suppliers.id
+
+        WHERE sales.organisation_id = $1
         AND sales.status = 'completed'
       `;
 
@@ -6376,7 +6557,7 @@ app.get(
       }
 
       if (supplierId) {
-        query += ` AND products.supplier_id = $${count}`;
+        query += ` AND product_stock_batches.supplier_id = $${count}`;
         values.push(supplierId);
         count++;
       }
@@ -6387,9 +6568,7 @@ app.get(
           products.name,
           products.sku,
           categories.name,
-          suppliers.name,
-          products.buying_price,
-          products.selling_price
+          suppliers.name
         ORDER BY gross_profit DESC
       `;
 
